@@ -2,6 +2,7 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_quill/flutter_quill.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -52,12 +53,45 @@ MailThread _threadFor(MailEmail email) => MailThread(
   messageCount: 1,
   unreadCount: 1,
   participants: const ['alice@example.com'],
-  latestMessage: email,
   latestAt: DateTime(2026, 9, 25, 10, 30),
+  latestMessage: email,
 );
 
+/// Records what the composer hands the server, so the test can tell a send from
+/// a draft and read what went with it.
+class _FakeMailClient extends WattEngineClient {
+  _FakeMailClient() : super(SolarNetworkAuthenticator(FlutterSecureStorage()));
+
+  final sent =
+      <({bool isDraft, List<MailRecipient> to, String subject, String body})>[];
+
+  @override
+  Future<MailEmail> sendEmail({
+    required String mailboxId,
+    required List<MailRecipient> to,
+    List<MailRecipient> cc = const [],
+    List<MailRecipient> bcc = const [],
+    required String subject,
+    required String body,
+    List<String> attachmentIds = const [],
+    bool isDraft = false,
+    String contentType = 'text/plain',
+    String? replyToId,
+  }) async {
+    sent.add((isDraft: isDraft, to: to, subject: subject, body: body));
+    return _email;
+  }
+}
+
 /// Pumps the mail list with [email] as its only thread.
-Future<void> _pumpMailList(WidgetTester tester, MailEmail email) async {
+///
+/// The whole app is pumped once per file: the shell's router is a singleton, so
+/// a second pump would mount a second router over the first.
+Future<void> _pumpMailList(
+  WidgetTester tester,
+  MailEmail email,
+  _FakeMailClient client,
+) async {
   SharedPreferences.setMockInitialValues({});
   await EasyLocalization.ensureInitialized();
   tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
@@ -98,6 +132,7 @@ Future<void> _pumpMailList(WidgetTester tester, MailEmail email) async {
         threadProvider.overrideWith((ref, id) async => [email]),
         emailProvider.overrideWith((ref, id) async => email),
         broadsProvider.overrideWith((ref) async => const <Broad>[]),
+        wattEngineClientProvider.overrideWith((ref) => client),
         mailAddressSuggestionsProvider.overrideWith((ref, request) async {
           if (request.query.toLowerCase() != 'alice') return const [];
           return const [
@@ -127,69 +162,149 @@ Future<void> _pumpMailList(WidgetTester tester, MailEmail email) async {
   );
 }
 
-void main() {
-  testWidgets('compose: compact fields, collapsed cc/bcc, full-screen body, '
-      'preset styles, keyboard shortcuts', (tester) async {
-    await _pumpMailList(tester, _email);
+/// The composer's own subtree. On a wide window the mail list stays on screen
+/// beside the composer, and it carries labels of its own.
+Finder _composer() => find
+    .ancestor(
+      of: find.byKey(const ValueKey('compose-body')),
+      matching: find.byType(KeyboardListener),
+    )
+    .first;
 
-    // Open compose from the mail list FAB.
-    await tester.tap(find.byType(FloatingActionButton));
-    await tester.pumpAndSettle();
-    expect(find.text('Compose'), findsOneWidget);
+/// The composer's header row for [label].
+Rect _rowOf(WidgetTester tester, String label, Finder composer) =>
+    tester.getRect(
+      find
+          .ancestor(
+            of: find.descendant(of: composer, matching: find.text(label)),
+            matching: find.byType(Row),
+          )
+          .first,
+    );
+
+/// The composer's header button wearing [tooltip].
+Finder _headerButtonFinder(String tooltip, Finder composer) => find
+    .ancestor(
+      of: find.descendant(of: composer, matching: find.byTooltip(tooltip)),
+      matching: find.byType(IconButton),
+    )
+    .first;
+
+/// The composer's header button wearing [tooltip].
+IconButton _headerButton(
+  WidgetTester tester,
+  String tooltip,
+  Finder composer,
+) => tester.widget<IconButton>(_headerButtonFinder(tooltip, composer));
+
+Future<void> _tapHeaderButton(
+  WidgetTester tester,
+  String tooltip,
+  Finder composer,
+) => tester.tap(_headerButtonFinder(tooltip, composer));
+
+/// The tooltip the composer's close button wears right now.
+String _closeTooltip(WidgetTester tester, Finder composer) => tester
+    .widget<Tooltip>(
+      find.descendant(of: composer, matching: find.byType(Tooltip)).first,
+    )
+    .message!;
+
+const _body = ValueKey('compose-body');
+
+Future<void> _openComposer(WidgetTester tester) async {
+  await tester.tap(find.byType(FloatingActionButton));
+  await tester.pumpAndSettle();
+}
+
+/// Advances past a submit's animations without running its snackbar out: a
+/// settled pump would wait the toast away before the caller can read it.
+Future<void> _settleComposer(WidgetTester tester) async {
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 350));
+  await tester.pump(const Duration(milliseconds: 350));
+  await tester.pump(const Duration(milliseconds: 350));
+}
+
+/// Lets the list settle again after an action's snackbar was asserted.
+Future<void> _settleMail(WidgetTester tester) => tester.pumpAndSettle(
+  const Duration(milliseconds: 100),
+  EnginePhase.sendSemanticsUpdate,
+  const Duration(seconds: 10),
+);
+
+void main() {
+  testWidgets('compose: one envelope frame, writing at the bottom, and no way '
+      'out that loses the message', (tester) async {
+    final client = _FakeMailClient();
+    await _pumpMailList(tester, _email, client);
+
+    // ---- The composer's frame ----
+    await _openComposer(tester);
+    final composer = _composer();
+    // The header names what the sheet is doing, not the screen it is on.
+    expect(
+      find.descendant(of: composer, matching: find.text('New message')),
+      findsOneWidget,
+    );
+    expect(find.text('Compose'), findsNothing);
+    // Nothing written is nothing to save: an empty composer would only add a
+    // blank row to Drafts, so the control is not offered.
+    expect(_headerButton(tester, 'Save draft', composer).onPressed, isNull);
+    expect(_closeTooltip(tester, composer), 'Close');
 
     // To/Subject visible; Cc/Bcc collapsed by default (toggle on To suffix).
+    expect(find.text('From'), findsOneWidget);
     expect(find.text('To'), findsOneWidget);
     expect(find.text('Subject'), findsOneWidget);
     expect(find.byTooltip('Cc/Bcc'), findsOneWidget);
     expect(find.text('Cc'), findsNothing);
     expect(find.text('Bcc'), findsNothing);
 
-    // The from picker wears the same box as the text fields, and still
-    // switches the mailbox it sends from. (A field's decoration hangs below
-    // it, and the list pane keeps a picker of its own: take the last of each.)
-    final fromBox = find.descendant(
-      of: find.byType(DropdownButtonFormField<String>).last,
-      matching: find.byType(InputDecorator),
-    );
-    final subjectBox = find.descendant(
-      of: find.byType(TextField).last,
-      matching: find.byType(InputDecorator),
-    );
-    final fromDecoration = tester
-        .widget<InputDecorator>(fromBox.first)
-        .decoration;
-    final subjectDecoration = tester
-        .widget<InputDecorator>(subjectBox.first)
-        .decoration;
-    expect(fromDecoration.filled, isTrue);
-    expect(fromDecoration.fillColor, subjectDecoration.fillColor);
-    expect(fromDecoration.border, subjectDecoration.border);
-    expect(
-      tester.getRect(fromBox.first).height,
-      tester.getRect(subjectBox.first).height,
-    );
+    // The header rows are one frame parted by hairlines: they abut instead of
+    // floating apart as separate boxes, which is what keeps the surface above
+    // the body quiet and gives the body the room.
+    final fromRow = _rowOf(tester, 'From', composer);
+    final toRow = _rowOf(tester, 'To', composer);
+    final subjectRow = _rowOf(tester, 'Subject', composer);
+    expect(fromRow.height, toRow.height);
+    expect(toRow.height, subjectRow.height);
+    expect(toRow.top - fromRow.bottom, 1);
+    expect(subjectRow.top - toRow.bottom, 1);
 
+    // The from picker wears the same row as the text fields, and still
+    // switches the mailbox it sends from.
+    final fromBox = find.descendant(
+      of: find.descendant(
+        of: composer,
+        matching: find.byType(DropdownButtonFormField<String>),
+      ),
+      matching: find.byType(InputDecorator),
+    );
+    expect(tester.getRect(fromBox).height, fromRow.height);
     await tester.tap(fromBox.first);
     await tester.pumpAndSettle();
     await tester.tap(find.text('Personal').last);
     await tester.pumpAndSettle();
-    expect(find.text('Personal'), findsOneWidget);
-    expect(find.text('Work'), findsNothing);
+    expect(
+      find.descendant(of: composer, matching: find.text('Personal')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: composer, matching: find.text('Work')),
+      findsNothing,
+    );
 
-    // Expanding the toggle reveals Cc/Bcc.
-    await tester.tap(find.byTooltip('Cc/Bcc'));
-    await tester.pumpAndSettle();
-    expect(find.text('Cc'), findsOneWidget);
-    expect(find.text('Bcc'), findsOneWidget);
-    final bodyFinder = find.byKey(const ValueKey('compose-body'));
-    final toField = find.byType(TextField).first;
+    final toField = find
+        .descendant(of: composer, matching: find.byType(TextField))
+        .first;
     final toBox = find.ancestor(
       of: toField,
       matching: find.byType(InputDecorator),
     );
 
-    // The field's text box sits centered in its box — the caret had been
-    // squeezed against the top by padding the box could not fit.
+    // The field's text box sits centered in its row — the caret had been
+    // squeezed against the top by padding the row could not fit.
     final toFrame = tester.getRect(toBox.first);
     final toText = tester.getRect(
       find.descendant(of: toBox.first, matching: find.byType(EditableText)),
@@ -199,12 +314,27 @@ void main() {
       moreOrLessEquals(toFrame.bottom - toText.bottom, epsilon: 0.5),
     );
 
-    // The Cc/Bcc toggle lives inside the To field, not beside it.
+    // The Cc/Bcc toggle lives inside the To row, not beside it.
     final toggle = tester.getRect(find.byTooltip('Cc/Bcc'));
     expect(toFrame.left, lessThan(toggle.left));
     expect(toFrame.right, greaterThanOrEqualTo(toggle.right));
     expect(toFrame.top, lessThan(toggle.top));
     expect(toFrame.bottom, greaterThan(toggle.bottom));
+
+    // Expanding the toggle adds the two rows to the same frame, between the
+    // addresses and the subject line.
+    await tester.tap(find.byTooltip('Cc/Bcc'));
+    await tester.pumpAndSettle();
+    expect(find.text('Cc'), findsOneWidget);
+    expect(find.text('Bcc'), findsOneWidget);
+    final ccRow = _rowOf(tester, 'Cc', composer);
+    final expandedSubject = _rowOf(tester, 'Subject', composer);
+    expect(ccRow.top, greaterThan(toRow.bottom));
+    expect(ccRow.top, lessThan(expandedSubject.top));
+    expect(_rowOf(tester, 'Bcc', composer).bottom, expandedSubject.top - 1);
+    await tester.tap(find.byTooltip('Cc/Bcc'));
+    await tester.pumpAndSettle();
+    expect(find.text('Cc'), findsNothing);
 
     // A picked suggestion becomes a chip and clears the field.
     await tester.enterText(toField, 'alice');
@@ -234,30 +364,18 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('dave@example.com'), findsNothing);
 
-    // Cc carries chips the same way (its field follows To's, then Bcc).
-    final ccField = find.byType(TextField).at(1);
-    await tester.enterText(ccField, 'erin@example.com');
-    await tester.testTextInput.receiveAction(TextInputAction.done);
-    await tester.pumpAndSettle();
-    expect(tester.widget<TextField>(ccField).controller!.text, isEmpty);
-    expect(find.text('erin@example.com'), findsOneWidget);
-
-    QuillController quill() =>
-        tester.widget<QuillEditor>(bodyFinder).controller;
-    expect(tester.getSize(bodyFinder).height, greaterThan(200));
-
-    // Preset style buttons are on the toolbar; H1 formats the selected line.
-    expect(find.text('H1'), findsOneWidget);
-    expect(find.text('H2'), findsOneWidget);
-    expect(find.text('H3'), findsOneWidget);
-    quill().document.insert(0, 'Hello world');
-    quill().updateSelection(
-      const TextSelection(baseOffset: 0, extentOffset: 11),
-      ChangeSource.local,
-    );
-    await tester.tap(find.text('H1'));
-    await tester.pump();
-    expect(quill().getSelectionStyle().attributes.keys, contains('header'));
+    // ---- The body is the hero, and the rail closes the flow ----
+    final bodyFinder = find.byKey(_body);
+    expect(tester.getSize(bodyFinder).height, greaterThan(240));
+    final bodyBottom = tester.getRect(bodyFinder).bottom;
+    final rail = tester.getRect(find.widgetWithText(FilledButton, 'Send'));
+    expect(rail.top, greaterThan(bodyBottom));
+    for (final tooltip in ['Formatting', 'Insert link', 'Add attachment']) {
+      expect(
+        tester.getRect(find.byTooltip(tooltip)).top,
+        greaterThan(bodyBottom),
+      );
+    }
 
     // Body sits in a rounded card that highlights while focused.
     await tester.tap(bodyFinder);
@@ -265,36 +383,117 @@ void main() {
     final card = tester.widget<AnimatedContainer>(
       find.byKey(const ValueKey('compose-body-card')),
     );
-    final cardDecoration = card.decoration! as BoxDecoration;
-    expect(cardDecoration.borderRadius, BorderRadius.circular(12));
+    expect(
+      (card.decoration! as BoxDecoration).borderRadius,
+      BorderRadius.circular(12),
+    );
 
-    // Emptying the row takes its chips back, and then a draft has no one to
-    // go to.
-    await tester.enterText(toField, '');
-    while (find.byTooltip('Remove recipient').evaluate().isNotEmpty) {
-      await tester.tap(find.byTooltip('Remove recipient').first);
-      await tester.pumpAndSettle();
-    }
-    expect(find.byType(EmailRecipientChip), findsNothing);
-    await tester.tap(find.byTooltip('Save draft'));
+    // Formatting lives behind Aa and still formats the selected line. The menu
+    // opens over the editor, so the selection it applies to has to survive the
+    // trip.
+    final quill = tester.widget<QuillEditor>(bodyFinder).controller;
+    quill.document.insert(0, 'Hello world');
+    quill.updateSelection(
+      const TextSelection(baseOffset: 0, extentOffset: 11),
+      ChangeSource.local,
+    );
+    await tester.tap(find.byTooltip('Formatting'));
+    await tester.pumpAndSettle();
+    expect(find.text('Heading 1'), findsOneWidget);
+    expect(find.text('Bold'), findsOneWidget);
+    await tester.tap(find.text('Heading 1'));
+    await tester.pumpAndSettle();
+    expect(quill.getSelectionStyle().attributes.keys, contains('header'));
+
+    // Something written is something to save, so the control comes back.
+    expect(_headerButton(tester, 'Save draft', composer).onPressed, isNotNull);
+    expect(_closeTooltip(tester, composer), 'Close and save draft');
+
+    // Escape is a close, not a discard: what was written becomes a draft
+    // instead of disappearing with the sheet.
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await _settleComposer(tester);
+    expect(find.byKey(_body), findsNothing);
+    expect(client.sent.single.isDraft, isTrue);
+    expect(client.sent.single.body, contains('Hello world'));
+    await _settleMail(tester);
+
+    // ---- Sending needs somewhere to go, a draft does not ----
+    await _openComposer(tester);
+    final subjectField = find
+        .descendant(of: composer, matching: find.byType(TextField))
+        .at(1);
+    TextField subject() => tester.widget<TextField>(subjectField);
+    await tester.enterText(subjectField, 'Solar farm maintenance');
+    await tester.pumpAndSettle();
+    expect(subject().controller!.text, 'Solar farm maintenance');
+
+    // Sending is refused, and says why without leaving.
+    await tester.tap(find.widgetWithText(FilledButton, 'Send'));
     await tester.pump();
     expect(find.text('Add at least one recipient.'), findsOneWidget);
-    await tester.pumpAndSettle();
-    await tester.enterText(toField, 'alice@example.net');
-    await tester.pumpAndSettle();
+    expect(client.sent.length, 1);
 
-    // Escape closes the compose sheet (works while the editor is focused).
-    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    // A draft needs somewhere to live, not somewhere to go: it saves with no
+    // recipient at all, which is the only way a half-addressed message can
+    // survive being closed.
+    await _tapHeaderButton(tester, 'Save draft', composer);
+    await _settleComposer(tester);
+    expect(client.sent.length, 2);
+    expect(client.sent.last.isDraft, isTrue);
+    expect(client.sent.last.to, isEmpty);
+    expect(client.sent.last.subject, 'Solar farm maintenance');
+    expect(find.text('Draft saved.'), findsOneWidget);
+    expect(find.byKey(_body), findsNothing);
+    await _settleMail(tester);
+
+    // ---- Closing keeps what was written; only discard throws it away ----
+    await _openComposer(tester);
+    await tester.enterText(subjectField, 'Panel cleaning');
     await tester.pumpAndSettle();
-    expect(find.text('Compose'), findsNothing);
+    await _tapHeaderButton(tester, 'Close and save draft', composer);
+    await _settleComposer(tester);
+    expect(client.sent.length, 3);
+    expect(client.sent.last.isDraft, isTrue);
+    expect(client.sent.last.subject, 'Panel cleaning');
+    expect(find.text('Draft saved.'), findsOneWidget);
+    expect(find.byKey(_body), findsNothing);
+    await _settleMail(tester);
+
+    // Discarding asks first, and cancelling keeps the writer where they were.
+    await _openComposer(tester);
+    await tester.enterText(subjectField, 'Scrap this');
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Discard changes'));
+    await tester.pumpAndSettle();
+    expect(find.text('Discard unsaved changes?'), findsOneWidget);
+    await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(_body), findsOneWidget);
+    expect(subject().controller!.text, 'Scrap this');
+
+    await tester.tap(find.byTooltip('Discard changes'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(TextButton, 'Discard changes'));
+    await _settleComposer(tester);
+    expect(client.sent.length, 3);
+    expect(find.byKey(_body), findsNothing);
     expect(find.byType(FloatingActionButton), findsOneWidget);
 
-    // Replying loads the quoted HTML into the editor via HTML→Delta.
+    // ---- A reply names itself, quotes the message, and invents no draft ----
     await tester.tap(find.text('Alice'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Reply'));
     await tester.pumpAndSettle();
-    expect(find.text('Compose'), findsOneWidget);
+    final reply = _composer();
+    expect(
+      find.descendant(of: reply, matching: find.text('Reply')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: reply, matching: find.text('New message')),
+      findsNothing,
+    );
     expect(find.text('Re: Hello there'), findsOneWidget);
     // The sender the message is going back to arrives as a chip.
     expect(
@@ -304,7 +503,7 @@ void main() {
       ),
       findsOneWidget,
     );
-    final replyBody = find.byKey(const ValueKey('compose-body'));
+    final replyBody = find.byKey(_body);
     final replyQuill = tester.widget<QuillEditor>(replyBody).controller;
     expect(replyQuill.document.toPlainText(), contains('Hi from Alice'));
     // The quoted image renders as an embed instead of failing the line that
@@ -321,5 +520,13 @@ void main() {
         'https://example.com/pic.png',
       ),
     );
+
+    // A reply opens already addressed and already quoting, and none of that is
+    // the writer's doing: closing it untouched leaves no draft behind.
+    await _tapHeaderButton(tester, 'Close', reply);
+    await tester.pumpAndSettle();
+    expect(client.sent.length, 3);
+    expect(find.byKey(_body), findsNothing);
+    expect(find.byType(FloatingActionButton), findsOneWidget);
   });
 }

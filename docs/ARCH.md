@@ -371,11 +371,16 @@ directly, so the mail tab is conversation-first:
   their own, anything under a painted image, unparseable values, and messages
   that ship a stylesheet (whose cascade cannot be evaluated here) are left
   alone.
-- The composer's header is one boxed field per row — from, to, (cc/bcc),
-  subject — sharing `_CompactLabeledField`: the app's outlined input box, sized
-  to one line plus the field's own padding so the caret sits centered instead of
-  being squeezed against the top, with the label outside on the left. The
-  cc/bcc toggle rides inside the To box as its suffix icon.
+- The composer's header rows — from, to, (cc/bcc), subject — share one
+  bordered card (`_ComposeEnvelope`) parted by hairlines, rather than one box
+  per field: the rows are one thing (who the message goes to, what it is
+  called) and the body below is another, so five stacked outline boxes said
+  "five errands" and spent more ink than the fields they framed. Sizing is
+  unchanged — `_CompactLabeledField` makes a row one line plus its own padding
+  so the caret sits centred instead of being squeezed against the top, label
+  outside on the left — but a row now draws no box of its own: it tints while
+  it holds the caret, and the frame owns the border. The cc/bcc toggle rides
+  inside the To row as its suffix icon.
 - Recipients are chips, not a comma-separated string:
   `_ComposeRecipientField` reuses `EmailRecipientChip` (with `onDeleted` for
   the composer's remove button) over an inline address field with the senders
@@ -383,6 +388,26 @@ directly, so the mail tab is conversation-first:
   suggestion all commit a chip; backspace in the empty field takes the last one
   back; an address left uncommitted still goes out with the message. Each row
   carries its own role (`to`/`cc`/`bcc`) into the draft.
+- The composer's bottom rail carries the actions that end a message: Send
+  first, because sending is what the surface is for and the caret finishes at
+  the bottom of the body rather than at the top of the sheet; then the writer's
+  tools — the Aa menu, link, attach — and the discard action at the far end.
+  Formatting folds into the Aa menu, each style named, because a ribbon of
+  fourteen buttons spent more width than a phone's composer has: on a 400pt
+  window "Insert link" and "Add attachment" sat at x 443 and x 483, off the
+  right edge, behind a horizontal scroll nothing advertised. The rail is sized
+  by its own content so a large text scale grows it instead of clipping the
+  Send label, and the shell resizes its body for the on-screen keyboard, so the
+  rail rides above it and a message can be sent without dismissing the keyboard
+  first.
+- Sending needs somewhere to go; a draft only needs somewhere to live. Only a
+  send requires a recipient, so a half-addressed message can still be saved —
+  which is what closing the composer does: a written composer saves itself as a
+  draft and leaves, and the close button's tooltip says so. Discard, at the
+  rail's end, is the one exit that throws the message away, and it asks first
+  because nothing behind it can bring the text back. `_dirty` — not "non-empty"
+  — is what tells a written composer from an untouched one, so closing a reply
+  that opened already addressed and quoting leaves no draft behind.
 - Replies carry `reply_to_id`; ElecPostal resolves the parent's thread, which
   keeps the reply in the conversation. The quoted body arrives as Quill embeds,
   and the composer builds what it does not recognise

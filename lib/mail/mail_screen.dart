@@ -179,7 +179,9 @@ class MailComposePage extends ConsumerWidget {
         ),
       );
 
-  Future<void> _sendDraft(
+  /// Sends or saves [draft] and reports whether the server took it. The sheet
+  /// leaves on its own once this says yes.
+  Future<bool> _sendDraft(
     BuildContext context,
     WidgetRef ref,
     _MailDraft draft,
@@ -200,12 +202,11 @@ class MailComposePage extends ConsumerWidget {
             replyToId: draft.replyToId,
           );
       invalidateMailSurfaces(ref);
-      if (context.mounted) {
-        context.router.pop();
-        showSnackBar(draft.isDraft ? 'draftSaved'.tr() : 'emailSent'.tr());
-      }
+      showSnackBar(draft.isDraft ? 'draftSaved'.tr() : 'emailSent'.tr());
+      return true;
     } catch (error) {
       showSnackBar(error.toString());
+      return false;
     }
   }
 }
@@ -223,8 +224,10 @@ class _MailListWidgetState extends ConsumerState<_MailListWidget> {
   String? _from;
   String? _to;
   bool? _hasAttachments;
+
   /// Conversation the detail pane is showing, for row highlighting.
   String? _selectedThreadId;
+
   /// Conversations requested from the server. "Load more" grows this instead of
   /// paging offsets, so every fetch is a superset of the previous listing:
   /// whole-conversation counts stay consistent and no page can go missing.
@@ -375,7 +378,9 @@ class _MailListWidgetState extends ConsumerState<_MailListWidget> {
       (client, message) => permanent
           ? client.deleteEmailPermanently(message.id)
           : client.deleteEmail(message.id),
-      success: permanent ? 'selectionDeletedPermanently' : 'selectionMovedToTrash',
+      success: permanent
+          ? 'selectionDeletedPermanently'
+          : 'selectionMovedToTrash',
     );
   }
 
@@ -775,8 +780,7 @@ class _MailListWidgetState extends ConsumerState<_MailListWidget> {
               success: 'selectionUpdated',
             ),
             onUnstar: () => _runOnSelection(
-              (client, message) =>
-                  client.starEmail(message.id, starred: false),
+              (client, message) => client.starEmail(message.id, starred: false),
               success: 'selectionUpdated',
             ),
             onMove: (folder) => _moveSelection(folder),
@@ -803,7 +807,8 @@ class _MailListWidgetState extends ConsumerState<_MailListWidget> {
       child: Stack(
         children: [
           list,
-          if (compose != null) Positioned(right: 16, bottom: 16, child: compose),
+          if (compose != null)
+            Positioned(right: 16, bottom: 16, child: compose),
         ],
       ),
     );
@@ -1225,9 +1230,9 @@ class MailDetailPage extends ConsumerWidget {
           onResend: (message) => _resendEmail(ref, message),
           onToggleRead: (message) => _toggleEmailRead(ref, message),
           onToggleStar: (message) => _toggleEmailStar(ref, message),
-          onMove: (message, folder) => _moveEmail(context, ref, message, folder),
-          onDownloadEml: (message) =>
-              _downloadEmailEml(context, ref, message),
+          onMove: (message, folder) =>
+              _moveEmail(context, ref, message, folder),
+          onDownloadEml: (message) => _downloadEmailEml(context, ref, message),
           onDelete: (message) => _deleteEmail(context, ref, message),
           onClose: () => context.router.pop(),
         );
@@ -1681,10 +1686,7 @@ class _MailSelectionBar extends StatelessWidget {
                   }
                 },
                 itemBuilder: (_) => [
-                  PopupMenuItem(
-                    value: 'read',
-                    child: Text('markRead'.tr()),
-                  ),
+                  PopupMenuItem(value: 'read', child: Text('markRead'.tr())),
                   PopupMenuItem(
                     value: 'unread',
                     child: Text('markUnread'.tr()),
@@ -1731,7 +1733,11 @@ class _SearchScopeBanner extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
       child: Row(
         children: [
-          Icon(Symbols.travel_explore, size: 16, color: scheme.onSurfaceVariant),
+          Icon(
+            Symbols.travel_explore,
+            size: 16,
+            color: scheme.onSurfaceVariant,
+          ),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
@@ -1792,6 +1798,10 @@ class _MailboxError extends StatelessWidget {
   }
 }
 
+/// The compose envelope's error row: the selected mailbox cannot send.
+///
+/// Sits flush in the envelope frame rather than floating in it, so the warning
+/// reads as that row's state instead of as a second card on top of the first.
 class _MailboxInvalidBanner extends StatelessWidget {
   const _MailboxInvalidBanner({required this.message});
 
@@ -1802,10 +1812,7 @@ class _MailboxInvalidBanner extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     return Container(
       padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: scheme.errorContainer.withValues(alpha: 0.55),
-        borderRadius: BorderRadius.circular(12),
-      ),
+      color: scheme.errorContainer.withValues(alpha: 0.55),
       child: Row(
         children: [
           Icon(Symbols.error, color: scheme.error, size: 20),
@@ -2168,7 +2175,8 @@ class _EmailThreadListState extends ConsumerState<_EmailThreadList> {
     }
     // While a larger page (or a refresh) is in flight, keep the previous
     // listing — but never conversations from a filter the user has left.
-    final page = loaded ?? (_cachedFilter == widget.query.filter ? _cached : null);
+    final page =
+        loaded ?? (_cachedFilter == widget.query.filter ? _cached : null);
     ref.listen(threadsProvider(widget.query), (previous, next) {
       final error = next.error;
       // A failure with rows on screen keeps them; say what went wrong rather
@@ -2199,7 +2207,9 @@ class _EmailThreadListState extends ConsumerState<_EmailThreadList> {
         const <String, MailAddressSuggestion>{};
     // A search spans every mailbox, so those rows have to name the mailbox
     // each conversation came out of; a folder-scoped list does not.
-    final searchAcrossMailboxes = (widget.query.filter.q ?? '').trim().isNotEmpty;
+    final searchAcrossMailboxes = (widget.query.filter.q ?? '')
+        .trim()
+        .isNotEmpty;
     final mailboxNames = searchAcrossMailboxes
         ? {
             for (final mailbox
@@ -2492,9 +2502,9 @@ class _ThreadMailboxBadge extends StatelessWidget {
               name,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                color: scheme.onSurfaceVariant,
-              ),
+              style: Theme.of(
+                context,
+              ).textTheme.labelSmall?.copyWith(color: scheme.onSurfaceVariant),
             ),
           ),
         ],
@@ -2854,8 +2864,7 @@ class _EmailDetailPanelState extends State<_EmailDetailPanel> {
     final selected = _selected;
     final summaryHeight = _summaryHeight ?? _estimateSummaryHeight;
     final resendable =
-        !selected.isDraft &&
-        selected.deliveryStatus?.toLowerCase() == 'failed';
+        !selected.isDraft && selected.deliveryStatus?.toLowerCase() == 'failed';
 
     return Material(
       color: Theme.of(context).colorScheme.surfaceContainerLow,
@@ -3375,10 +3384,7 @@ class _PlainTextBodyScrollState extends State<_PlainTextBodyScroll> {
     if (onScroll == null || !mounted || !_controller.hasClients) return;
     final position = _controller.position;
     onScroll(
-      EmailBodyScroll(
-        y: position.pixels,
-        maxY: position.maxScrollExtent,
-      ),
+      EmailBodyScroll(y: position.pixels, maxY: position.maxScrollExtent),
     );
   }
 
@@ -3449,7 +3455,7 @@ String _senderWarningText(String warning) =>
 /// ElecPostal records the sender-authentication verdict on the message and keeps
 /// it after the message is moved out of Spam, so the warning stays visible while
 /// the message is open. A forged-sender verdict is called out as such; weaker
-/// authentication warnings get the same banner at a lower intensity.
+/// authentication warnings keep the pane behind them and only tint their frame.
 class MailSenderSafetyBanner extends StatelessWidget {
   const MailSenderSafetyBanner({super.key, required this.email});
 
@@ -3462,8 +3468,9 @@ class MailSenderSafetyBanner extends StatelessWidget {
     if (level == MailSenderSafetyLevel.none || authentication == null) {
       return const SizedBox(width: double.infinity);
     }
-    final scheme = Theme.of(context).colorScheme;
-    final text = Theme.of(context).textTheme;
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final text = theme.textTheme;
     final phishing = level == MailSenderSafetyLevel.phishing;
 
     // The reason and the warning carrying the same verdict share one line.
@@ -3474,22 +3481,54 @@ class MailSenderSafetyBanner extends StatelessWidget {
         _senderWarningText(warning),
     }.toList();
 
+    // Both levels paint an opaque blend of the pane behind them, so the fill —
+    // and with it the contrast every line of copy is measured against — does
+    // not drift with the theme or with what the reader scrolls under the
+    // banner. The forged-sender verdict is a filled alert; bare warnings keep
+    // the pane and only tint their frame, so the two levels read as different
+    // weights rather than as the same red at two opacities.
+    final fill = Color.alphaBlend(
+      scheme.errorContainer.withValues(alpha: phishing ? 0.6 : 0.22),
+      scheme.surface,
+    );
+    final border = phishing
+        ? scheme.error.withValues(alpha: 0.5)
+        : scheme.error.withValues(alpha: 0.35);
+    final titleColor = phishing ? scheme.onErrorContainer : scheme.error;
+    final bodyColor = phishing
+        ? scheme.onErrorContainer.withValues(alpha: 0.85)
+        : scheme.onSurfaceVariant;
+
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
       child: Container(
         width: double.infinity,
         padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
-          color: scheme.errorContainer.withValues(alpha: phishing ? 0.55 : 0.3),
+          color: fill,
           borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: border),
         ),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Icon(
-              phishing ? Symbols.phishing : Symbols.warning,
-              color: scheme.error,
-              size: 20,
+            // The verdict has to carry at a glance, so the glyph sits in a
+            // badge of its own instead of floating on the tinted fill.
+            SizedBox.square(
+              dimension: 28,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: phishing
+                      ? scheme.error
+                      : scheme.error.withValues(alpha: 0.18),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(
+                  phishing ? Symbols.phishing : Symbols.warning,
+                  color: phishing ? scheme.onError : scheme.error,
+                  size: 18,
+                ),
+              ),
             ),
             const SizedBox(width: 12),
             Expanded(
@@ -3502,29 +3541,44 @@ class MailSenderSafetyBanner extends StatelessWidget {
                             : 'senderSafetySuspiciousTitle')
                         .tr(),
                     style: text.titleSmall?.copyWith(
-                      color: scheme.onErrorContainer,
+                      color: titleColor,
                       fontWeight: FontWeight.w600,
                     ),
                   ),
-                  if (messages.isNotEmpty) const SizedBox(height: 4),
-                  for (final message in messages)
+                  // The one line the reader has to act on stays with the
+                  // title; the server's protocol evidence is kept below the
+                  // rule, where it reads as the reason rather than as a
+                  // second instruction.
+                  if (phishing)
                     Padding(
-                      padding: const EdgeInsets.only(bottom: 2),
+                      padding: const EdgeInsets.only(top: 2),
                       child: Text(
-                        message,
+                        'senderSafetyPhishingHint'.tr(),
                         style: text.bodySmall?.copyWith(
-                          color: scheme.onErrorContainer,
+                          color: titleColor,
+                          fontWeight: FontWeight.w600,
                         ),
                       ),
                     ),
-                  if (phishing) ...[
-                    const SizedBox(height: 4),
-                    Text(
-                      'senderSafetyPhishingHint'.tr(),
-                      style: text.bodySmall?.copyWith(
-                        color: scheme.onErrorContainer,
-                        fontWeight: FontWeight.w600,
+                  if (messages.isNotEmpty) ...[
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      child: Divider(
+                        height: 1,
+                        thickness: 1,
+                        color: scheme.error.withValues(alpha: 0.25),
                       ),
+                    ),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      spacing: 4,
+                      children: [
+                        for (final message in messages)
+                          Text(
+                            message,
+                            style: text.bodySmall?.copyWith(color: bodyColor),
+                          ),
+                      ],
                     ),
                   ],
                 ],
@@ -3688,8 +3742,7 @@ Uri _cloudFileUri(IDisplayableCloudFile file, String? workspaceId) {
 /// or delivery state for a sent message. Emails with neither get no footer,
 /// so reaching the end of a plain message does not expand blank space.
 bool emailHasFooterContent(MailEmail email) =>
-    email.attachments.isNotEmpty ||
-    (email.hasDeliveryStatus && !email.isDraft);
+    email.attachments.isNotEmpty || (email.hasDeliveryStatus && !email.isDraft);
 
 /// Attachments and delivery state for the open message, shown below the body.
 class _EmailFooter extends StatelessWidget {
@@ -3763,7 +3816,6 @@ class _EmailFooter extends StatelessWidget {
       ),
     );
   }
-
 }
 
 /// One run of a plain-text message body: literal copy, or a link.
@@ -3944,8 +3996,9 @@ class _EmailPlainTextBodyState extends State<EmailPlainTextBody> {
 
   TapGestureRecognizer _recognizerFor(Uri uri) => _linkRecognizers.putIfAbsent(
     uri,
-    () => TapGestureRecognizer()
-      ..onTap = () => unawaited((widget.onOpenLink ?? openEmailLink)(uri)),
+    () =>
+        TapGestureRecognizer()
+          ..onTap = () => unawaited((widget.onOpenLink ?? openEmailLink)(uri)),
   );
 
   /// Renders one stretch of copy between inline images as a single selectable
@@ -4050,8 +4103,11 @@ class _InlineEmailImage extends StatelessWidget {
           child: Image.network(
             displayUrl,
             fit: BoxFit.contain,
-            errorBuilder: (_, _, _) =>
-                CloudFileChip(file: file, displayUrl: displayUrl, onPressed: open),
+            errorBuilder: (_, _, _) => CloudFileChip(
+              file: file,
+              displayUrl: displayUrl,
+              onPressed: open,
+            ),
           ),
         ),
       ),
@@ -4429,9 +4485,10 @@ String injectEmailHead(String html, String snippet) {
   if (headEnd != null) {
     return html.replaceRange(headEnd.start, headEnd.start, snippet);
   }
-  final htmlTag = RegExp(r'<\s*html\b[^>]*>', caseSensitive: false).firstMatch(
-    html,
-  );
+  final htmlTag = RegExp(
+    r'<\s*html\b[^>]*>',
+    caseSensitive: false,
+  ).firstMatch(html);
   if (htmlTag != null) {
     return html.replaceRange(htmlTag.end, htmlTag.end, '<head>$snippet</head>');
   }
@@ -4972,7 +5029,10 @@ class _ComposeSheet extends ConsumerStatefulWidget {
 
   final MailMailbox mailbox;
   final List<MailMailbox> mailboxes;
-  final Future<void> Function(_MailDraft draft) onSubmitted;
+
+  /// Sends or saves [draft] and reports whether the server took it. False
+  /// leaves the sheet open with the writer's text still in it.
+  final Future<bool> Function(_MailDraft draft) onSubmitted;
   final VoidCallback onClose;
   final String? mailHost;
   final MailEmail? replyingTo;
@@ -4998,10 +5058,26 @@ class _ComposeSheetState extends ConsumerState<_ComposeSheet> {
   List<MailRecipient> _bcc = [];
   var _showCcBcc = false;
   var _pickingAttachment = false;
+
+  /// Whether the writer has changed anything. A reply opens with the sender
+  /// already addressed and the quote in the body, so "non-empty" is not the
+  /// same question as "written in": this is what a close has to save and what
+  /// the discard button has to be careful about.
+  var _dirty = false;
+  var _submitting = false;
+  StreamSubscription<DocChange>? _documentChanges;
   final _shortcutFocusNode = FocusNode();
   final _bodyFocusNode = FocusNode();
   MailMailbox? get _selectedMailbox =>
       widget.mailboxes.where((m) => m.id == _mailboxId).firstOrNull;
+
+  /// What the sheet is doing, so the header names the action rather than the
+  /// screen: a reply window titled "Compose" mislabels itself.
+  String get _actionTitleKey {
+    if (widget.forwarding != null) return 'forward';
+    if (widget.replyingTo == null) return 'newMessage';
+    return widget.replyAll ? 'replyAll' : 'reply';
+  }
 
   @override
   void initState() {
@@ -5012,7 +5088,9 @@ class _ComposeSheetState extends ConsumerState<_ComposeSheet> {
     if (replyingTo != null) {
       final from = replyingTo.from;
       if (from != null && from.address.trim().isNotEmpty) {
-        _to = [MailRecipient(address: from.address, name: from.name, kind: 'to')];
+        _to = [
+          MailRecipient(address: from.address, name: from.name, kind: 'to'),
+        ];
       }
       if (widget.replyAll) {
         final self = _selectedMailbox?.fullAddress(widget.mailHost);
@@ -5044,6 +5122,26 @@ class _ComposeSheetState extends ConsumerState<_ComposeSheet> {
         forwarding.attachments.map((file) => (id: file.id, name: file.name)),
       );
     }
+    // Listen after the initial fill, so setting up a reply does not count as
+    // the writer having touched it.
+    for (final controller in [
+      _toController,
+      _ccController,
+      _bccController,
+      _subjectController,
+    ]) {
+      controller.addListener(_markDirty);
+    }
+    _documentChanges = _quillController.document.changes.listen(
+      (_) => _markDirty(),
+    );
+  }
+
+  /// The writer changed something, which is what makes the message worth
+  /// keeping — and what turns a bare close into a draft save.
+  void _markDirty() {
+    if (_dirty) return;
+    setState(() => _dirty = true);
   }
 
   String _quoteBody(MailEmail email, {required bool forwarded}) {
@@ -5058,10 +5156,16 @@ class _ComposeSheetState extends ConsumerState<_ComposeSheet> {
 
   @override
   void dispose() {
-    _toController.dispose();
-    _ccController.dispose();
-    _bccController.dispose();
-    _subjectController.dispose();
+    for (final controller in [
+      _toController,
+      _ccController,
+      _bccController,
+      _subjectController,
+    ]) {
+      controller.removeListener(_markDirty);
+      controller.dispose();
+    }
+    _documentChanges?.cancel();
     _quillController.dispose();
     _shortcutFocusNode.dispose();
     _bodyFocusNode.dispose();
@@ -5078,11 +5182,12 @@ class _ComposeSheetState extends ConsumerState<_ComposeSheet> {
         workspaceId: widget.mailbox.workspaceId,
       );
       if (files != null && files.isNotEmpty && mounted) {
-        setState(
-          () => _attachments.addAll(
+        setState(() {
+          _dirty = true;
+          _attachments.addAll(
             files.map((file) => (id: file.id, name: file.name)),
-          ),
-        );
+          );
+        });
       }
     } finally {
       if (mounted) setState(() => _pickingAttachment = false);
@@ -5097,13 +5202,20 @@ class _ComposeSheetState extends ConsumerState<_ComposeSheet> {
     String kind,
   ) => _mergeRecipients(committed, _parseRecipients(field.text, kind: kind));
 
-  Future<void> _submit({bool draft = false}) async {
+  /// Sends [draft], or saves it as a draft. Returns whether the server took it.
+  ///
+  /// A draft is not a send: it needs somewhere to live, not somewhere to go, so
+  /// only sending demands a recipient. Refusing to save a half-addressed
+  /// message would leave the writer with nowhere to put one — and nothing for
+  /// closing the sheet to hold on to.
+  Future<bool> _submit({bool draft = false}) async {
     final to = _recipients(_to, _toController, 'to');
-    if (to.isEmpty) {
+    if (!draft && to.isEmpty) {
       showSnackBar('recipientsRequired'.tr());
-      return;
+      return false;
     }
-    await widget.onSubmitted(
+    if (draft && !_dirty) return false;
+    return widget.onSubmitted(
       _MailDraft(
         mailboxId: _mailboxId,
         to: to,
@@ -5120,6 +5232,47 @@ class _ComposeSheetState extends ConsumerState<_ComposeSheet> {
         contentType: 'text/html',
       ),
     );
+  }
+
+  /// Leaves the composer, keeping what was written: a close is not a discard,
+  /// and a written message reaches the Drafts folder instead of the void. A
+  /// save the server refuses leaves the sheet open with the text still in it,
+  /// because the other exit is a deliberate [Symbols.delete].
+  Future<void> _close() async {
+    if (!_dirty) {
+      widget.onClose();
+      return;
+    }
+    await _leave(draft: true);
+  }
+
+  /// Submits, and leaves the composer once the server has taken it. One rule
+  /// for both exits: sending and saving are the same round trip, and neither
+  /// should close the sheet over text the server refused.
+  Future<void> _leave({bool draft = false}) async {
+    if (_submitting) return;
+    setState(() => _submitting = true);
+    final accepted = await _submit(draft: draft);
+    if (!mounted) return;
+    setState(() => _submitting = false);
+    if (accepted) widget.onClose();
+  }
+
+  /// Throws the message away. The one exit that loses work, so it asks first:
+  /// there is no undo behind it.
+  Future<void> _discard() async {
+    if (_submitting) return;
+    if (_dirty) {
+      final discard = await showConfirmAlert(
+        'discardChangesPrompt'.tr(),
+        'discardChanges'.tr(),
+        icon: Symbols.delete,
+        isDanger: true,
+        confirmLabel: 'discardChanges'.tr(),
+      );
+      if (!discard || !mounted) return;
+    }
+    widget.onClose();
   }
 
   Future<void> _insertLink() async {
@@ -5181,13 +5334,13 @@ class _ComposeSheetState extends ConsumerState<_ComposeSheet> {
         actions: {
           _SendEmailIntent: CallbackAction<_SendEmailIntent>(
             onInvoke: (_) {
-              _submit();
+              _leave();
               return null;
             },
           ),
           _SaveDraftIntent: CallbackAction<_SaveDraftIntent>(
             onInvoke: (_) {
-              _submit(draft: true);
+              _leave(draft: true);
               return null;
             },
           ),
@@ -5197,15 +5350,17 @@ class _ComposeSheetState extends ConsumerState<_ComposeSheet> {
           onKeyEvent: (event) {
             if (event is KeyDownEvent &&
                 event.logicalKey == LogicalKeyboardKey.escape) {
-              widget.onClose();
+              _close();
             }
           },
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // Header: close, title, save draft, send. It stands in for an
-              // app bar, so it takes the status bar into its own height and
-              // the sheet's surface behind it paints the strip.
+              // Header: what the sheet is doing, and how to leave it. It stands
+              // in for an app bar, so it takes the status bar into its own
+              // height and the sheet's surface behind it paints the strip.
+              // Sending is the last thing the writer does, so it lives at the
+              // bottom of the body instead of up here beside the title.
               SafeArea(
                 bottom: false,
                 child: SizedBox(
@@ -5215,14 +5370,16 @@ class _ComposeSheetState extends ConsumerState<_ComposeSheet> {
                     child: Row(
                       children: [
                         IconButton(
-                          tooltip: 'close'.tr(),
-                          onPressed: widget.onClose,
+                          tooltip: _dirty
+                              ? 'closeAndSaveDraft'.tr()
+                              : 'close'.tr(),
+                          onPressed: _close,
                           icon: const Icon(Symbols.close),
                         ),
                         const SizedBox(width: 4),
                         Expanded(
                           child: Text(
-                            'compose'.tr(),
+                            _actionTitleKey.tr(),
                             style: textTheme.titleMedium,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
@@ -5230,176 +5387,133 @@ class _ComposeSheetState extends ConsumerState<_ComposeSheet> {
                         ),
                         IconButton(
                           tooltip: 'saveDraft'.tr(),
-                          onPressed: () => _submit(draft: true),
+                          // Nothing written means nothing to save: an empty
+                          // compose would only add a blank row to Drafts.
+                          onPressed: _dirty ? () => _leave(draft: true) : null,
                           icon: const Icon(Symbols.bookmark_add),
-                        ),
-                        const SizedBox(width: 4),
-                        Tooltip(
-                          message: 'sendShortcut'.tr(),
-                          child: FilledButton.icon(
-                            onPressed: () => _submit(),
-                            icon: const Icon(Symbols.send, size: 18),
-                            label: Text('send'.tr()),
-                          ),
                         ),
                       ],
                     ),
                   ),
                 ),
               ),
-              const Divider(height: 1),
-              // Compact header fields: from, to, (cc/bcc), subject.
+              // Header fields: who it goes to and what it is called, as one
+              // frame. The subject line's own divider separates it from the
+              // addresses because it belongs to all of them.
               Padding(
-                padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-                child: Column(
-                  children: [
-                    _CompactLabeledField(
-                      label: 'from'.tr(),
-                      child: DropdownButtonFormField<String>(
-                        initialValue: _mailboxId,
-                        isDense: true,
-                        isExpanded: true,
-                        style: Theme.of(context).textTheme.bodyLarge,
-                        decoration: _CompactLabeledField.decoration(),
-                        items: [
-                          for (final mailbox in widget.mailboxes)
-                            DropdownMenuItem(
-                              value: mailbox.id,
-                              child: Text(mailbox.displayName),
+                padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+                child: AnimatedSize(
+                  duration: const Duration(milliseconds: 200),
+                  curve: Curves.easeOutCubic,
+                  alignment: Alignment.topCenter,
+                  child: _ComposeEnvelope(
+                    rows: [
+                      _CompactLabeledField(
+                        label: 'from'.tr(),
+                        child: DropdownButtonFormField<String>(
+                          initialValue: _mailboxId,
+                          isDense: true,
+                          isExpanded: true,
+                          style: Theme.of(context).textTheme.bodyLarge,
+                          decoration: _CompactLabeledField.decoration(context),
+                          items: [
+                            for (final mailbox in widget.mailboxes)
+                              DropdownMenuItem(
+                                value: mailbox.id,
+                                child: Text(mailbox.displayName),
+                              ),
+                          ],
+                          onChanged: (value) {
+                            if (value != null) {
+                              setState(() => _mailboxId = value);
+                            }
+                          },
+                        ),
+                      ),
+                      if (_selectedMailbox
+                              ?.fullAddress(widget.mailHost)
+                              .contains('@') !=
+                          true)
+                        _MailboxInvalidBanner(
+                          message: 'mailboxAddressInvalidSend'.tr(),
+                        ),
+                      _CompactLabeledField(
+                        label: 'to'.tr(),
+                        child: _ComposeRecipientField(
+                          controller: _toController,
+                          recipients: _to,
+                          kind: 'to',
+                          mailHost: widget.mailHost,
+                          onChanged: (recipients) =>
+                              setState(() => _to = recipients),
+                          // Sits inside the row's box, at its trailing edge.
+                          suffixIcon: IconButton(
+                            tooltip: 'ccBcc'.tr(),
+                            onPressed: () =>
+                                setState(() => _showCcBcc = !_showCcBcc),
+                            icon: Icon(
+                              _showCcBcc
+                                  ? Symbols.expand_less
+                                  : Symbols.expand_more,
+                              size: 18,
                             ),
-                        ],
-                        onChanged: (value) {
-                          if (value != null) {
-                            setState(() => _mailboxId = value);
-                          }
-                        },
-                      ),
-                    ),
-                    if (_selectedMailbox
-                            ?.fullAddress(widget.mailHost)
-                            .contains('@') !=
-                        true) ...[
-                      _MailboxInvalidBanner(
-                        message: 'mailboxAddressInvalidSend'.tr(),
-                      ),
-                    ],
-                    const SizedBox(height: 8),
-                    _CompactLabeledField(
-                      label: 'to'.tr(),
-                      child: _ComposeRecipientField(
-                        controller: _toController,
-                        recipients: _to,
-                        kind: 'to',
-                        mailHost: widget.mailHost,
-                        onChanged: (recipients) =>
-                            setState(() => _to = recipients),
-                        // Sits inside the field's box, at its trailing edge.
-                        suffixIcon: IconButton(
-                          tooltip: 'ccBcc'.tr(),
-                          onPressed: () =>
-                              setState(() => _showCcBcc = !_showCcBcc),
-                          icon: Icon(
-                            _showCcBcc
-                                ? Symbols.expand_less
-                                : Symbols.expand_more,
-                            size: 18,
-                          ),
-                          visualDensity: VisualDensity.compact,
-                          padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(
-                            minWidth: 32,
-                            minHeight: 32,
-                          ),
-                          style: IconButton.styleFrom(
-                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            visualDensity: VisualDensity.compact,
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(
+                              minWidth: 32,
+                              minHeight: 32,
+                            ),
+                            style: IconButton.styleFrom(
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
                           ),
                         ),
                       ),
-                    ),
-                    AnimatedSize(
-                      duration: const Duration(milliseconds: 200),
-                      curve: Curves.easeOutCubic,
-                      alignment: Alignment.topCenter,
-                      child: _showCcBcc
-                          ? Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const SizedBox(height: 8),
-                                _CompactLabeledField(
-                                  label: 'cc'.tr(),
-                                  child: _ComposeRecipientField(
-                                    controller: _ccController,
-                                    recipients: _cc,
-                                    kind: 'cc',
-                                    mailHost: widget.mailHost,
-                                    onChanged: (recipients) =>
-                                        setState(() => _cc = recipients),
-                                  ),
-                                ),
-                                const SizedBox(height: 8),
-                                _CompactLabeledField(
-                                  label: 'bcc'.tr(),
-                                  child: _ComposeRecipientField(
-                                    controller: _bccController,
-                                    recipients: _bcc,
-                                    kind: 'bcc',
-                                    mailHost: widget.mailHost,
-                                    onChanged: (recipients) =>
-                                        setState(() => _bcc = recipients),
-                                  ),
-                                ),
-                              ],
-                            )
-                          : const SizedBox(width: double.infinity),
-                    ),
-                    const SizedBox(height: 8),
-                    _CompactLabeledField(
-                      label: 'subject'.tr(),
-                      child: TextField(
-                        controller: _subjectController,
-                        style: textTheme.titleMedium,
-                        textInputAction: TextInputAction.next,
-                        decoration: _CompactLabeledField.decoration(),
-                        onSubmitted: (_) => _bodyFocusNode.requestFocus(),
-                        onTapOutside: (_) =>
-                            FocusManager.instance.primaryFocus?.unfocus(),
+                      if (_showCcBcc) ...[
+                        _CompactLabeledField(
+                          label: 'cc'.tr(),
+                          child: _ComposeRecipientField(
+                            controller: _ccController,
+                            recipients: _cc,
+                            kind: 'cc',
+                            mailHost: widget.mailHost,
+                            onChanged: (recipients) =>
+                                setState(() => _cc = recipients),
+                          ),
+                        ),
+                        _CompactLabeledField(
+                          label: 'bcc'.tr(),
+                          child: _ComposeRecipientField(
+                            controller: _bccController,
+                            recipients: _bcc,
+                            kind: 'bcc',
+                            mailHost: widget.mailHost,
+                            onChanged: (recipients) =>
+                                setState(() => _bcc = recipients),
+                          ),
+                        ),
+                      ],
+                      _CompactLabeledField(
+                        label: 'subject'.tr(),
+                        child: TextField(
+                          controller: _subjectController,
+                          style: textTheme.titleMedium,
+                          textInputAction: TextInputAction.next,
+                          decoration: _CompactLabeledField.decoration(context),
+                          onSubmitted: (_) => _bodyFocusNode.requestFocus(),
+                          onTapOutside: (_) =>
+                              FocusManager.instance.primaryFocus?.unfocus(),
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
-              ),
-              const Divider(height: 1),
-              // Formatting toolbar with inline styles and block presets.
-              _ComposeToolbar(
-                onBold: () => _quillController.formatSelection(Attribute.bold),
-                onItalic: () =>
-                    _quillController.formatSelection(Attribute.italic),
-                onUnderline: () =>
-                    _quillController.formatSelection(Attribute.underline),
-                onStrikethrough: () =>
-                    _quillController.formatSelection(Attribute.strikeThrough),
-                onHeading1: () =>
-                    _quillController.formatSelection(Attribute.h1),
-                onHeading2: () =>
-                    _quillController.formatSelection(Attribute.h2),
-                onHeading3: () =>
-                    _quillController.formatSelection(Attribute.h3),
-                onBulletList: () =>
-                    _quillController.formatSelection(Attribute.ul),
-                onNumberedList: () =>
-                    _quillController.formatSelection(Attribute.ol),
-                onQuote: () =>
-                    _quillController.formatSelection(Attribute.blockQuote),
-                onCode: () =>
-                    _quillController.formatSelection(Attribute.codeBlock),
-                onLink: _insertLink,
-                onAttach: _pickingAttachment ? null : _pickAttachment,
               ),
               // Body fills the remaining height, inside a rounded card that
               // subtly highlights while focused.
               Expanded(
                 child: Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
                   child: AnimatedBuilder(
                     animation: _bodyFocusNode,
                     builder: (context, child) {
@@ -5438,7 +5552,7 @@ class _ComposeSheetState extends ConsumerState<_ComposeSheet> {
                         onKeyPressed: (event, node) {
                           if (event is KeyDownEvent &&
                               event.logicalKey == LogicalKeyboardKey.escape) {
-                            widget.onClose();
+                            _close();
                             return KeyEventResult.handled;
                           }
                           return null;
@@ -5475,8 +5589,10 @@ class _ComposeSheetState extends ConsumerState<_ComposeSheet> {
                               overflow: TextOverflow.ellipsis,
                             ),
                             visualDensity: VisualDensity.compact,
-                            onDeleted: () =>
-                                setState(() => _attachments.remove(file)),
+                            onDeleted: () => setState(() {
+                              _dirty = true;
+                              _attachments.remove(file);
+                            }),
                             deleteButtonTooltipMessage: 'removeAttachment'.tr(),
                           ),
                       ],
@@ -5484,6 +5600,79 @@ class _ComposeSheetState extends ConsumerState<_ComposeSheet> {
                   ),
                 ),
               ],
+              // Send is the last thing the writer does, so it closes the
+              // surface at the bottom — next to the caret, not up in the
+              // title bar — with everything that is not writing beside it.
+              _ComposeActionRail(
+                onSend: () => _leave(),
+                onDiscard: _discard,
+                onLink: _insertLink,
+                onAttach: _pickingAttachment ? null : _pickAttachment,
+                formatting: [
+                  (
+                    icon: Symbols.format_bold,
+                    label: 'bold'.tr(),
+                    apply: () =>
+                        _quillController.formatSelection(Attribute.bold),
+                  ),
+                  (
+                    icon: Symbols.format_italic,
+                    label: 'italic'.tr(),
+                    apply: () =>
+                        _quillController.formatSelection(Attribute.italic),
+                  ),
+                  (
+                    icon: Symbols.format_underlined,
+                    label: 'underline'.tr(),
+                    apply: () =>
+                        _quillController.formatSelection(Attribute.underline),
+                  ),
+                  (
+                    icon: Symbols.format_strikethrough,
+                    label: 'strikethrough'.tr(),
+                    apply: () => _quillController.formatSelection(
+                      Attribute.strikeThrough,
+                    ),
+                  ),
+                  (
+                    icon: Symbols.format_h1,
+                    label: 'heading1'.tr(),
+                    apply: () => _quillController.formatSelection(Attribute.h1),
+                  ),
+                  (
+                    icon: Symbols.format_h2,
+                    label: 'heading2'.tr(),
+                    apply: () => _quillController.formatSelection(Attribute.h2),
+                  ),
+                  (
+                    icon: Symbols.format_h3,
+                    label: 'heading3'.tr(),
+                    apply: () => _quillController.formatSelection(Attribute.h3),
+                  ),
+                  (
+                    icon: Symbols.format_list_bulleted,
+                    label: 'bulletList'.tr(),
+                    apply: () => _quillController.formatSelection(Attribute.ul),
+                  ),
+                  (
+                    icon: Symbols.format_list_numbered,
+                    label: 'numberedList'.tr(),
+                    apply: () => _quillController.formatSelection(Attribute.ol),
+                  ),
+                  (
+                    icon: Symbols.format_quote,
+                    label: 'quote'.tr(),
+                    apply: () =>
+                        _quillController.formatSelection(Attribute.blockQuote),
+                  ),
+                  (
+                    icon: Symbols.code,
+                    label: 'codeBlock'.tr(),
+                    apply: () =>
+                        _quillController.formatSelection(Attribute.codeBlock),
+                  ),
+                ],
+              ),
             ],
           ),
         ),
@@ -5492,125 +5681,130 @@ class _ComposeSheetState extends ConsumerState<_ComposeSheet> {
   }
 }
 
-/// Compact formatting toolbar with inline styles and block presets.
-class _ComposeToolbar extends StatelessWidget {
-  const _ComposeToolbar({
-    required this.onBold,
-    required this.onItalic,
-    required this.onUnderline,
-    required this.onStrikethrough,
-    required this.onHeading1,
-    required this.onHeading2,
-    required this.onHeading3,
-    required this.onBulletList,
-    required this.onNumberedList,
-    required this.onQuote,
-    required this.onCode,
+/// The composer's bottom rail: the actions that end a message.
+///
+/// Send leads it because sending is what the surface is for, and the caret
+/// finishes at the bottom of the body rather than at the top of the sheet.
+/// Formatting, linking and attaching sit beside it — the writer's tools, on the
+/// row where the writing happens.
+///
+/// The styles fold into the Aa menu rather than lining up as a ribbon: fourteen
+/// buttons spent more width than a phone's composer has, which pushed "Insert
+/// link" and "Add attachment" past the right edge of a 400pt screen, behind a
+/// horizontal scroll nothing advertised. A menu also has room to name each
+/// style, where "H1"/"H2"/"H3" as bare text buttons named nothing.
+class _ComposeActionRail extends StatelessWidget {
+  const _ComposeActionRail({
+    required this.onSend,
+    required this.onDiscard,
     required this.onLink,
     required this.onAttach,
+    required this.formatting,
   });
 
-  final VoidCallback onBold;
-  final VoidCallback onItalic;
-  final VoidCallback onUnderline;
-  final VoidCallback onStrikethrough;
-  final VoidCallback onHeading1;
-  final VoidCallback onHeading2;
-  final VoidCallback onHeading3;
-  final VoidCallback onBulletList;
-  final VoidCallback onNumberedList;
-  final VoidCallback onQuote;
-  final VoidCallback onCode;
+  final VoidCallback onSend;
+  final VoidCallback onDiscard;
   final VoidCallback onLink;
+
+  /// Null while a picker is already open.
   final VoidCallback? onAttach;
+
+  /// Inline styles and block presets, in menu order.
+  final List<({IconData icon, String label, VoidCallback apply})> formatting;
+
+  /// Where the menu parts: inline styles, block presets, then lists and code.
+  static const _menuGroups = {4, 7};
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final text = Theme.of(context).textTheme;
     Widget iconButton(IconData icon, String tooltip, VoidCallback? onPressed) =>
         IconButton(
           tooltip: tooltip,
           onPressed: onPressed,
-          icon: Icon(icon, size: 18),
+          icon: Icon(icon, size: 20),
           visualDensity: VisualDensity.compact,
           padding: EdgeInsets.zero,
-          constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+          constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
         );
-    Widget presetButton(String label, String tooltip, VoidCallback onPressed) =>
-        Tooltip(
-          message: tooltip,
-          child: TextButton(
-            onPressed: onPressed,
-            style: TextButton.styleFrom(
-              visualDensity: VisualDensity.compact,
-              padding: EdgeInsets.zero,
-              minimumSize: const Size(32, 32),
-              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+
+    return Container(
+      // Tall enough for the app's Send button, and free to grow with it: a
+      // fixed height would clip the label at a large text scale.
+      constraints: const BoxConstraints(minHeight: 52),
+      decoration: BoxDecoration(
+        border: Border(top: BorderSide(color: scheme.outlineVariant)),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      child: Row(
+        children: [
+          Tooltip(
+            message: 'sendShortcut'.tr(),
+            child: FilledButton.icon(
+              onPressed: onSend,
+              icon: const Icon(Symbols.send, size: 18),
+              label: Text('send'.tr()),
             ),
-            child: Text(label),
           ),
-        );
-    return SizedBox(
-      height: 44,
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 8),
-        child: Row(
-          children: [
-            iconButton(Symbols.format_bold, 'bold'.tr(), onBold),
-            iconButton(Symbols.format_italic, 'italic'.tr(), onItalic),
-            iconButton(
-              Symbols.format_underlined,
-              'underline'.tr(),
-              onUnderline,
+          const SizedBox(width: 4),
+          PopupMenuButton<int>(
+            tooltip: 'formatting'.tr(),
+            onSelected: (index) => formatting[index].apply(),
+            itemBuilder: (context) => [
+              for (var index = 0; index < formatting.length; index++) ...[
+                if (_menuGroups.contains(index)) const PopupMenuDivider(),
+                PopupMenuItem(
+                  value: index,
+                  child: Row(
+                    children: [
+                      Icon(
+                        formatting[index].icon,
+                        size: 20,
+                        color: scheme.onSurfaceVariant,
+                      ),
+                      const SizedBox(width: 12),
+                      Text(formatting[index].label),
+                    ],
+                  ),
+                ),
+              ],
+            ],
+            child: SizedBox(
+              width: 40,
+              height: 40,
+              child: Center(child: Text('Aa', style: text.titleSmall)),
             ),
-            iconButton(
-              Symbols.format_strikethrough,
-              'strikethrough'.tr(),
-              onStrikethrough,
-            ),
-            const SizedBox(width: 8),
-            presetButton('H1', 'heading1'.tr(), onHeading1),
-            presetButton('H2', 'heading2'.tr(), onHeading2),
-            presetButton('H3', 'heading3'.tr(), onHeading3),
-            const SizedBox(width: 8),
-            iconButton(
-              Symbols.format_list_bulleted,
-              'bulletList'.tr(),
-              onBulletList,
-            ),
-            iconButton(
-              Symbols.format_list_numbered,
-              'numberedList'.tr(),
-              onNumberedList,
-            ),
-            iconButton(Symbols.format_quote, 'quote'.tr(), onQuote),
-            iconButton(Symbols.code, 'codeBlock'.tr(), onCode),
-            const SizedBox(width: 8),
-            iconButton(Symbols.link, 'insertLink'.tr(), onLink),
-            iconButton(Symbols.attach_file, 'addAttachment'.tr(), onAttach),
-          ],
-        ),
+          ),
+          const SizedBox(width: 4),
+          iconButton(Symbols.link, 'insertLink'.tr(), onLink),
+          iconButton(Symbols.attach_file, 'addAttachment'.tr(), onAttach),
+          const Spacer(),
+          // The other way out, and the only one that throws the message away:
+          // the close button above keeps it.
+          iconButton(Symbols.delete, 'discardChanges'.tr(), onDiscard),
+        ],
       ),
     );
   }
 }
 
-/// Label and field box for one compose header row (from, to, cc, bcc,
-/// subject).
+/// Label and input for one compose header row (from, to, cc, bcc, subject).
 ///
-/// The boxes are as tall as the field's own content — one text line plus
-/// [decoration]'s padding — so the caret sits centered and a recipient row
-/// grows downwards as its chips wrap.
+/// Rows are as tall as their own content — one text line plus [decoration]'s
+/// padding — so the caret sits centered and a recipient row grows downwards as
+/// its chips wrap. The label gutter holds the first line's height so a wrapped
+/// row keeps its label beside the first row of chips.
 class _CompactLabeledField extends StatelessWidget {
   const _CompactLabeledField({required this.label, required this.child});
 
   final String label;
   final Widget child;
 
-  /// Vertical breathing room inside a header box.
-  static const _padding = EdgeInsets.symmetric(horizontal: 12, vertical: 10);
+  /// Vertical breathing room inside a header row.
+  static const _padding = EdgeInsets.symmetric(horizontal: 12, vertical: 8);
 
-  /// Height of a single-line header box.
+  /// Height of a single-line header row.
   static double heightOf(BuildContext context) {
     final style = Theme.of(context).textTheme.bodyLarge;
     final scaled = MediaQuery.textScalerOf(
@@ -5619,17 +5813,37 @@ class _CompactLabeledField extends StatelessWidget {
     return _padding.vertical + scaled * (style?.height ?? 1.5);
   }
 
-  /// The box every header field wears: the app's outlined input theme with the
-  /// padding these rows need.
+  /// What every header row wears. The rows share one frame, so a row draws no
+  /// box of its own: it only tints while it holds the caret, and the envelope
+  /// around it owns the border. No slot may fall back to the app's outlined
+  /// input theme, or each row would grow a second box of its own.
   ///
   /// The padding is deliberately below the theme's own so that one line plus
   /// the padding measures exactly [heightOf]: an oversized padding would push
-  /// the text out of the box and leave the caret off-center.
-  static InputDecoration decoration({Widget? suffixIcon}) => InputDecoration(
-    suffixIcon: suffixIcon,
-    isDense: true,
-    contentPadding: _padding,
-  );
+  /// the text out of the row and leave the caret off-centre.
+  static InputDecoration decoration(
+    BuildContext context, {
+    Widget? suffixIcon,
+  }) {
+    final scheme = Theme.of(context).colorScheme;
+    return InputDecoration(
+      suffixIcon: suffixIcon,
+      isDense: true,
+      contentPadding: _padding,
+      filled: true,
+      fillColor: WidgetStateColor.resolveWith(
+        (states) => states.contains(WidgetState.focused)
+            ? scheme.primary.withValues(alpha: 0.06)
+            : Colors.transparent,
+      ),
+      border: InputBorder.none,
+      enabledBorder: InputBorder.none,
+      disabledBorder: InputBorder.none,
+      focusedBorder: InputBorder.none,
+      errorBorder: InputBorder.none,
+      focusedErrorBorder: InputBorder.none,
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -5660,6 +5874,46 @@ class _CompactLabeledField extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// The compose header fields as one frame: a single outlined card whose rows
+/// are parted by hairlines.
+///
+/// One card rather than one box per field, because these rows are one thing —
+/// who the message goes to and what it is called — and the body below is
+/// another. It keeps the surface above the writing area quiet: five stacked
+/// input boxes read as five separate errands, and their borders cost more ink
+/// than the field they frame.
+class _ComposeEnvelope extends StatelessWidget {
+  const _ComposeEnvelope({required this.rows});
+
+  /// Rows in reading order. Hairlines are inserted between them, never around
+  /// them: the frame already draws its own edge.
+  final List<Widget> rows;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: scheme.outlineVariant),
+      ),
+      // A row tints itself while it holds the caret; clipping keeps that tint
+      // inside the frame's rounded corners.
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(11),
+        child: Column(
+          children: [
+            for (var index = 0; index < rows.length; index++) ...[
+              if (index > 0) Divider(height: 1, color: scheme.outlineVariant),
+              rows[index],
+            ],
+          ],
+        ),
+      ),
     );
   }
 }
@@ -5766,7 +6020,9 @@ class _ComposeRecipientFieldState
     return KeyEventResult.handled;
   }
 
-  Future<Iterable<MailAddressSuggestion>> _options(TextEditingValue value) async {
+  Future<Iterable<MailAddressSuggestion>> _options(
+    TextEditingValue value,
+  ) async {
     final query = value.text.trim();
     if (query.isEmpty) return const [];
     try {
@@ -5804,6 +6060,7 @@ class _ComposeRecipientFieldState
           isFocused: _focusNode.hasFocus,
           isEmpty: widget.recipients.isEmpty && widget.controller.text.isEmpty,
           decoration: _CompactLabeledField.decoration(
+            context,
             suffixIcon: widget.suffixIcon,
           ),
           child: Wrap(
@@ -5993,7 +6250,11 @@ class _ComposeUnknownEmbed extends EmbedBuilder {
         errorBuilder: (context, error, stackTrace) => Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Symbols.broken_image, size: 16, color: scheme.onSurfaceVariant),
+            Icon(
+              Symbols.broken_image,
+              size: 16,
+              color: scheme.onSurfaceVariant,
+            ),
             const SizedBox(width: 6),
             Flexible(
               child: Text(
