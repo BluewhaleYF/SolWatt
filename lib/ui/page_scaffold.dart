@@ -10,6 +10,11 @@ import 'package:material_symbols_icons/symbols.dart';
 /// so this key is typed against Flutter's `ScaffoldState` and must stay that
 /// way: a key typed against the fork's `ScaffoldState` resolves to `null` for
 /// the shell even while the shell is on screen.
+///
+/// Only the shell the router is showing carries it: a shell that a `replaceAll`
+/// is animating out keeps building next to its replacement, and two scaffolds
+/// sharing this key is "Multiple widgets used the same GlobalKey", which Flutter
+/// answers by dropping the tree.
 final shellScaffoldKey = GlobalKey<ScaffoldState>();
 
 /// Leading app-bar button for a page inside the tab's nested stack: Back once

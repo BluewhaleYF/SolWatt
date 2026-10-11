@@ -36,6 +36,13 @@ final globalOverlay = GlobalKey<OverlayState>();
 /// Matches the generated [GateRoute] name for navigation outside typed routes.
 const gateRouteName = 'GateRoute';
 
+/// Matches the generated [AppShellRoute] name.
+///
+/// The shell outlives its stack entry for the length of a transition, so the
+/// router stack is the only place that says whether it is still the route the
+/// app is showing.
+const appShellRouteName = 'AppShellRoute';
+
 BorderRadius? _workspaceAvatarBorderRadius(Workspace? workspace) =>
     workspace?.isIndividual == true ? BorderRadius.circular(999) : null;
 
@@ -207,19 +214,37 @@ class AppShellPage extends ConsumerWidget {
     // for the whole app session.
     ref.watch(solWattPushProvider);
 
+    /// Whether this shell is still the route the router is showing.
+    ///
+    /// A `replaceAll` that leaves the shell — the drawer's sign-out, the
+    /// workspace console's leave — keeps this page in the tree until its exit
+    /// transition ends, and the page keeps rebuilding until then. Once the
+    /// router has left it behind it must stop acting as the shell: it may not
+    /// navigate (the gate it opened on the way out must not be replaced by
+    /// itself) and it may not claim the shell's process-wide keys (see
+    /// [_NavigationShell.isShown]). Both compare against this page's own route
+    /// match: the route name alone cannot tell an AppShell on its way out from
+    /// the AppShell that replaced it.
+    bool onStack() {
+      final mine = context.routeData;
+      return context.router.stack.any((page) => page.routeData == mine);
+    }
+
+    /// Sends the app back to the gate, unless the router has already left this
+    /// shell behind (see [onStack]).
+    void leaveForGate() {
+      if (!context.mounted || !onStack()) return;
+      context.router.replaceAll([const PageRouteInfo(gateRouteName)]);
+    }
+
     ref.listen(appAccessProvider, (previous, next) {
       next.whenData((state) {
-        if (state != AppAccess.ready && context.mounted) {
-          context.router.replaceAll([const PageRouteInfo(gateRouteName)]);
-        }
+        if (state != AppAccess.ready) leaveForGate();
       });
     });
 
     void returnToGate() {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!context.mounted) return;
-        context.router.replaceAll([const PageRouteInfo(gateRouteName)]);
-      });
+      WidgetsBinding.instance.addPostFrameCallback((_) => leaveForGate());
     }
 
     return access.when(
@@ -266,6 +291,7 @@ class AppShellPage extends ConsumerWidget {
               return _TabMemory(
                 tabs: tabs,
                 child: _NavigationShell(
+                  isShown: onStack(),
                   selectedIndex: tabs.activeIndex,
                   onSelected: tabs.setActiveIndex,
                   child: child,
@@ -373,10 +399,15 @@ class _TabMemoryState extends ConsumerState<_TabMemory> {
 
 class _NavigationShell extends ConsumerStatefulWidget {
   const _NavigationShell({
+    required this.isShown,
     required this.selectedIndex,
     required this.onSelected,
     required this.child,
   });
+
+  /// Whether this is the shell the router is showing, as opposed to one a
+  /// `replaceAll` is still animating out. See [AppShellPage.onStack].
+  final bool isShown;
 
   final int selectedIndex;
   final ValueChanged<int> onSelected;
@@ -451,7 +482,12 @@ class _NavigationShellState extends ConsumerState<_NavigationShell> {
       // mid-transition; `shellScaffoldKey` is stable for the app's lifetime and
       // is also what pages without their own scaffold (the drive file list)
       // use to open the drawer.
-      key: shellScaffoldKey,
+      //
+      // Only the shell the router is showing claims it: the same key on a shell
+      // that is still animating out next to its replacement is what Flutter
+      // reports as "Multiple widgets used the same GlobalKey", and it answers
+      // that by dropping the tree.
+      key: widget.isShown ? shellScaffoldKey : null,
       backgroundColor: scheme.surface,
       drawer: Drawer(
         child: _GlobalNavigationDrawer(
@@ -486,8 +522,10 @@ class _NavigationShellState extends ConsumerState<_NavigationShell> {
                             // matchId), which remounts this whole subtree. The
                             // rail keeps a stable GlobalKey so the
                             // AnimatedSwitcher below survives the remount and
-                            // can cross-fade the destination sets.
-                            key: _desktopNavigationKey,
+                            // can cross-fade the destination sets. The key is
+                            // shared with the other shells' rails, so only the
+                            // shown shell claims it (see above).
+                            key: widget.isShown ? _desktopNavigationKey : null,
                             selectedIndex: widget.selectedIndex,
                             onSelected: widget.onSelected,
                             workspace: workspace,

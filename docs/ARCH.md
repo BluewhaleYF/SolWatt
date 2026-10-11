@@ -88,6 +88,15 @@ replaces itself with `AppShellPage` once `appAccessProvider` reports `ready`.
 clear, or session loss. Feature routes under the shell assume a valid session
 and selected workspace.
 
+Both pages act on settled `appAccessProvider` answers only. That provider keeps
+reporting its last decision while `selectedWorkspaceProvider` re-resolves, so a
+swap taken mid-resolution mounts an `AppShellPage` that immediately learns the
+state it was created under and bounces back to the gate — and the shell it is
+replacing is still in the tree until its exit transition ends, so two shells
+claim the shell's process-wide `shellScaffoldKey` at once. Flutter reports that
+as a duplicated `GlobalKey` and answers it by blanking the app. Only the shell
+the router is showing claims that key.
+
 Session and workspace selection are persisted with secure storage. Prefer
 `invalidateSessionScope` / `invalidateWorkspaceScope` after auth or workspace
 changes so dependent providers refresh consistently.

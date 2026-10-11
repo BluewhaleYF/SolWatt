@@ -7,11 +7,10 @@ import 'package:material_symbols_icons/symbols.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'package:solwatt/core/services/app_icon_service.dart';
+import 'package:solwatt/main.dart';
 import 'package:solwatt/network.dart';
 import 'package:solwatt/ui/page_scaffold.dart';
 import 'package:solwatt/workspaces/workspace_actions.dart';
-
-const _appShellRouteName = 'AppShellRoute';
 
 @RoutePage()
 class GatePage extends ConsumerStatefulWidget {
@@ -48,18 +47,28 @@ class _GatePageState extends ConsumerState<GatePage> {
     setState(() => _iconAsset = AppIconService.cuiteIconAsset);
   }
 
+  /// Enters the shell exactly once, and only from a settled [AppAccess.ready].
+  ///
+  /// The swap is the only thing that may mount an [AppShellPage]: the shell's
+  /// scaffold key is process-wide, so a second AppShell mounted while the first
+  /// is still transitioning out duplicates that key and Flutter replaces the
+  /// tree with a blank page.
   void _enterShell() {
     if (!mounted || _enteringShell) return;
     _enteringShell = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      context.router.replaceAll([const PageRouteInfo(_appShellRouteName)]);
+      context.router.replaceAll([const PageRouteInfo(appShellRouteName)]);
     });
   }
 
   @override
   Widget build(BuildContext context) {
     final access = ref.watch(appAccessProvider);
+    // Watched so the gate can tell a settled access decision from one taken
+    // while `selectedWorkspaceProvider` was still re-resolving; see the `data`
+    // branch below.
+    final settling = ref.watch(selectedWorkspaceProvider).isLoading;
 
     ref.listen(appAccessProvider, (previous, next) {
       next.whenData((state) {
@@ -80,6 +89,24 @@ class _GatePageState extends ConsumerState<GatePage> {
         ),
       ),
       data: (state) {
+        // The gate acts on settled answers only. `appAccessProvider` keeps
+        // reporting the last settled decision while `selectedWorkspaceProvider`
+        // re-resolves, so a decision taken mid-resolution is stale in either
+        // direction: the gate would enter the shell for a workspace that is
+        // being left, or leave a picker that is about to be satisfied.
+        //
+        // Acting on a stale state is also how two AppShell pages end up
+        // mounted at once: the swap mounts an AppShell that immediately learns
+        // the state it was created under, and the shell it is replacing is
+        // still on screen for the length of its exit transition. Both then
+        // claim the process-wide `shellScaffoldKey`, which Flutter reports as
+        // "Multiple widgets used the same GlobalKey" before it replaces the
+        // tree with a blank page.
+        if (settling) {
+          return const _GateFrame(
+            child: Center(child: CircularProgressIndicator()),
+          );
+        }
         switch (state) {
           case AppAccess.loading:
             return const _GateFrame(
@@ -96,7 +123,12 @@ class _GatePageState extends ConsumerState<GatePage> {
               ),
             );
           case AppAccess.needsWorkspace:
-            return _GateFrame(child: _WorkspacePanel(onEnter: _enterShell));
+            return _GateFrame(
+              child: _WorkspacePanel(
+                onActivate: (workspace) =>
+                    activateWorkspaceAction(ref, workspace),
+              ),
+            );
           case AppAccess.ready:
             _enterShell();
             return const _GateFrame(
@@ -339,9 +371,12 @@ class _DeviceCodePanel extends StatelessWidget {
 }
 
 class _WorkspacePanel extends ConsumerWidget {
-  const _WorkspacePanel({required this.onEnter});
+  const _WorkspacePanel({required this.onActivate});
 
-  final VoidCallback onEnter;
+  /// Applies the picked workspace. The gate stays on the picker until the
+  /// selection settles and enters the shell from the resulting [AppAccess]:
+  /// navigating here instead would race that swap.
+  final Future<void> Function(Workspace workspace) onActivate;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -420,14 +455,7 @@ class _WorkspacePanel extends ConsumerWidget {
             label: Text('new'.tr()),
           ),
         ),
-        Expanded(
-          child: WorkspaceList(
-            onActivate: (workspace) async {
-              await activateWorkspaceAction(ref, workspace);
-              onEnter();
-            },
-          ),
-        ),
+        Expanded(child: WorkspaceList(onActivate: onActivate)),
       ],
     );
   }
