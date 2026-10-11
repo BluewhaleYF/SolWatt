@@ -71,9 +71,8 @@ class FileListScreen extends HookConsumerWidget {
 
     final tabs = useState<List<_DriveFileTab>>([]);
     final activeTabId = useState<String?>(null);
-    final selectedWorkspaceId = useState<String?>(null);
-    // Latches after the active-workspace seed so a personal workspace (which
-    // leaves [selectedWorkspaceId] null) is not re-seeded on every tab close.
+    // Latches after the first tab is seeded so closing every tab leaves the
+    // empty state instead of re-opening the workspace root.
     final seededWorkspaceTab = useState(false);
     final showSidebar = useState<bool>(false);
     final showFilters = useState(false);
@@ -112,9 +111,19 @@ class FileListScreen extends HookConsumerWidget {
     final fallbackRecycled = useMemoized(() => ValueNotifier(false));
     final fallbackQuery = useMemoized(() => ValueNotifier<String?>(null));
 
+    // The drive has no inline workspace switcher: folder tabs always browse the
+    // app-selected workspace. Personal (individual) workspaces hold no drive
+    // files, so they map to the personal-files root (a null workspace id).
+    final selectedWorkspace = ref.watch(selectedWorkspaceProvider).value;
+    final hasSelectedWorkspace = selectedWorkspace != null;
+    final globalWorkspaceId =
+        selectedWorkspace == null || selectedWorkspace.isIndividual
+        ? null
+        : selectedWorkspace.id;
+
     void createTab(FileListMode mode) {
       final id = DateTime.now().microsecondsSinceEpoch.toString();
-      final workspaceId = selectedWorkspaceId.value;
+      final workspaceId = globalWorkspaceId;
       tabs.value = [
         ...tabs.value,
         _DriveFileTab(id: id, mode: mode, workspaceId: workspaceId),
@@ -136,7 +145,7 @@ class FileListScreen extends HookConsumerWidget {
     }
 
     void openFileTab(SnCloudFile file) {
-      final workspaceId = selectedWorkspaceId.value;
+      final workspaceId = globalWorkspaceId;
       final existing = tabs.value
           .where(
             (tab) => tab.file?.id == file.id && tab.workspaceId == workspaceId,
@@ -160,15 +169,14 @@ class FileListScreen extends HookConsumerWidget {
       activeTabId.value = id;
     }
 
-    void openFolderTab(String path, {String? workspaceId}) {
+    void openFolderTab(String path) {
       final normalizedPath = path.trim().isEmpty ? '/' : path;
-      final selectedWorkspace = workspaceId ?? selectedWorkspaceId.value;
       final existing = tabs.value
           .where(
             (tab) =>
                 tab.file == null &&
                 tab.mode == FileListMode.normal &&
-                tab.workspaceId == selectedWorkspace,
+                tab.workspaceId == globalWorkspaceId,
           )
           .where((tab) => pathStates[tab.id]?.value == normalizedPath)
           .firstOrNull;
@@ -183,7 +191,7 @@ class FileListScreen extends HookConsumerWidget {
         _DriveFileTab(
           id: id,
           mode: FileListMode.normal,
-          workspaceId: selectedWorkspace,
+          workspaceId: globalWorkspaceId,
         ),
       ];
       activeTabId.value = id;
@@ -214,10 +222,7 @@ class FileListScreen extends HookConsumerWidget {
         currentParentId = parent.parentId;
       }
       final path = segments.reversed.join('/');
-      openFolderTab(
-        path.isEmpty ? '/' : '/$path',
-        workspaceId: selectedWorkspaceId.value,
-      );
+      openFolderTab(path.isEmpty ? '/' : '/$path');
     }
 
     void updateFileTab(SnCloudFile file) {
@@ -322,38 +327,17 @@ class FileListScreen extends HookConsumerWidget {
         : tabs.value.where((tab) => tab.id == activeTabId.value).firstOrNull;
     final currentPath = activeTab == null ? null : pathStates[activeTab.id];
     final mode = activeTab == null ? null : modeStates[activeTab.id];
-    final activeWorkspaceId = activeTab == null
-        ? selectedWorkspaceId.value
-        : activeTab.workspaceId;
+    // Folder tabs browse the globally active workspace; file preview tabs stay
+    // pinned to the workspace their file was opened from.
+    final activeWorkspaceId = activeTab != null && activeTab.file != null
+        ? activeTab.workspaceId
+        : globalWorkspaceId;
     final activeWorkspaceSlug = activeWorkspaceId == null
         ? null
         : workspaceListAsync.asData?.value
               .where((workspace) => workspace.id == activeWorkspaceId)
               .firstOrNull
               ?.slug;
-    void changeWorkspace(String? workspaceId) {
-      selectedWorkspaceId.value = workspaceId;
-      final tab = activeTab;
-      if (tab == null) return;
-      tabs.value = tabs.value
-          .map(
-            (item) => item.id == tab.id
-                ? _DriveFileTab(
-                    id: item.id,
-                    mode: item.mode,
-                    file: item.file,
-                    workspaceId: workspaceId,
-                  )
-                : item,
-          )
-          .toList();
-      pathStates[tab.id]?.value = '/';
-      poolStates[tab.id]?.value = null;
-      selectedFileIdsStates[tab.id]?.value = <String>{};
-      visibleFileIdsStates[tab.id]?.value = <String>{};
-      invalidateIndexedDriveViews(ref, tab.id);
-      ref.invalidate(unindexedFileListFamilyProvider(tab.id));
-    }
 
     final selectedPool = activeTab == null ? null : poolStates[activeTab.id];
     final viewMode = activeTab == null ? null : viewModeStates[activeTab.id];
@@ -409,61 +393,62 @@ class FileListScreen extends HookConsumerWidget {
       };
     }, const []);
 
-    // SolWatt: seed the drive from the app-selected workspace. The first
-    // indexed tab opens automatically once the workspace list is available,
-    // matching how the previous FilesPage booted into the active workspace.
-    final solWattSelected = ref.watch(selectedWorkspaceProvider).value;
+    // SolWatt: the drive follows the app-selected workspace. The first indexed
+    // tab opens once [selectedWorkspaceProvider] resolves, and every later
+    // workspace switch retargets the open folder tabs to the new root so they
+    // never keep browsing the previous workspace's caches.
     useEffect(() {
-      if (seededWorkspaceTab.value) return null;
-      if (tabs.value.isNotEmpty) return null;
-      if (selectedWorkspaceId.value != null) return null;
-      if (solWattSelected == null) return null;
-      if (workspaceListAsync.isLoading) return null;
-
-      final available = workspaceListAsync.asData?.value ?? const [];
-      if (available.isEmpty) return null;
-      final match = available.where(
-        (w) => w.id == solWattSelected.id,
-      );
-      if (match.isEmpty) return null;
-
-      // Personal (individual) workspaces hold no drive files: browsing one
-      // falls back to personal files at the root.
-      final targetWorkspaceId = solWattSelected.isIndividual
-          ? null
-          : solWattSelected.id;
+      if (!hasSelectedWorkspace) return null;
 
       // Hooks run inside build: mutating tab state there is dropped (the
       // element's dirty flag clears when the build ends) and riverpod rejects
-      // provider writes mid-build. Seed the first tab after the frame instead.
+      // provider writes mid-build. Apply tab changes after the frame instead.
+      if (!seededWorkspaceTab.value) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!context.mounted) return;
+          if (seededWorkspaceTab.value || tabs.value.isNotEmpty) return;
+          seededWorkspaceTab.value = true;
+          createTab(FileListMode.normal);
+        });
+        return null;
+      }
+
+      final staleTabs = tabs.value
+          .where(
+            (tab) => tab.file == null && tab.workspaceId != globalWorkspaceId,
+          )
+          .map((tab) => tab.id)
+          .toList();
+      if (staleTabs.isEmpty) return null;
+
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!context.mounted) return;
-        if (tabs.value.isNotEmpty) return;
-        if (selectedWorkspaceId.value != null) return;
-
-        selectedWorkspaceId.value = targetWorkspaceId;
-        seededWorkspaceTab.value = true;
-        final id = DateTime.now().microsecondsSinceEpoch.toString();
-        tabs.value = [
-          _DriveFileTab(
-            id: id,
-            mode: FileListMode.normal,
-            workspaceId: targetWorkspaceId,
-          ),
-        ];
-        activeTabId.value = id;
-        pathStates[id] = ValueNotifier('/');
-        modeStates[id] = ValueNotifier(FileListMode.normal);
-        poolStates[id] = ValueNotifier(null);
-        viewModeStates[id] = ValueNotifier(FileListViewMode.columns);
-        selectionModeStates[id] = ValueNotifier(false);
-        selectedFileIdsStates[id] = ValueNotifier(<String>{});
-        visibleFileIdsStates[id] = ValueNotifier(<String>{});
-        recycledStates[id] = ValueNotifier(false);
-        queryStates[id] = ValueNotifier(null);
+        final stale = staleTabs.toSet();
+        tabs.value = tabs.value
+            .map(
+              (tab) => stale.contains(tab.id)
+                  ? _DriveFileTab(
+                      id: tab.id,
+                      mode: tab.mode,
+                      workspaceId: globalWorkspaceId,
+                    )
+                  : tab,
+            )
+            .toList();
+        for (final tabId in stale) {
+          pathStates[tabId]?.value = '/';
+          poolStates[tabId]?.value = null;
+          selectionModeStates[tabId]?.value = false;
+          selectedFileIdsStates[tabId]?.value = <String>{};
+          visibleFileIdsStates[tabId]?.value = <String>{};
+          queryStates[tabId]?.value = null;
+          recycledStates[tabId]?.value = false;
+          invalidateIndexedDriveViews(ref, tabId);
+          ref.invalidate(unindexedFileListFamilyProvider(tabId));
+        }
       });
       return null;
-    }, [solWattSelected, workspaceListAsync]);
+    }, [globalWorkspaceId, hasSelectedWorkspace]);
 
     // Notifiers should be read fresh each time to avoid disposal issues
 
@@ -530,24 +515,11 @@ class FileListScreen extends HookConsumerWidget {
                     onRevealParentFolder: revealParentFolder,
                     onSelectTab: (tabId) {
                       activeTabId.value = tabId;
-                      final tab = tabs.value
-                          .where((item) => item.id == tabId)
-                          .firstOrNull;
-                      selectedWorkspaceId.value = tab?.workspaceId;
                     },
                     onCloseTab: closeTab,
                     onReorderTab: reorderTab,
                     onAddIndexedTab: () => createTab(FileListMode.normal),
                     onAddUnindexedTab: () => createTab(FileListMode.unindexed),
-                    // Personal workspaces never store drive files, so the
-                    // switcher offers organization workspaces plus the
-                    // personal-files root only.
-                    workspaces:
-                        (workspaceListAsync.asData?.value ?? const [])
-                            .where((workspace) => !workspace.isIndividual)
-                            .toList(),
-                    selectedWorkspaceId: activeWorkspaceId,
-                    onWorkspaceChanged: changeWorkspace,
                     onRefresh: activeTab == null || activeTab.file != null
                         ? null
                         : () async {
@@ -660,10 +632,7 @@ class FileListScreen extends HookConsumerWidget {
                               quota: quota,
                               currentPath: currentPath,
                               selectedPool: selectedPool,
-                              onOpenFolderInNewTab: (path) => openFolderTab(
-                                path,
-                                workspaceId: activeWorkspaceId,
-                              ),
+                              onOpenFolderInNewTab: openFolderTab,
                               showFilters: showFilters.value,
                               onPickAndUpload: () => _pickAndUploadFile(
                                 ref,
@@ -793,8 +762,7 @@ class FileListScreen extends HookConsumerWidget {
                   )
                 : _DriveStorageStatusBar(
                     usage: usage,
-                    onTapDetails: () =>
-                        _showUsageSheet(context, usage, quota),
+                    onTapDetails: () => _showUsageSheet(context, usage, quota),
                   ),
           ],
         ),
@@ -1468,9 +1436,6 @@ class _DriveTabStrip extends StatelessWidget {
   final VoidCallback? onNewFolder;
   final VoidCallback? onUpload;
   final bool uploadIsAsset;
-  final List<WorkspaceSummary> workspaces;
-  final String? selectedWorkspaceId;
-  final ValueChanged<String?> onWorkspaceChanged;
 
   const _DriveTabStrip({
     required this.tabs,
@@ -1487,9 +1452,6 @@ class _DriveTabStrip extends StatelessWidget {
     this.onNewFolder,
     this.onUpload,
     this.uploadIsAsset = false,
-    required this.workspaces,
-    required this.selectedWorkspaceId,
-    required this.onWorkspaceChanged,
   });
 
   IconData _tabIcon(_DriveFileTab tab) {
@@ -1601,72 +1563,6 @@ class _DriveTabStrip extends StatelessWidget {
                           );
                         },
                       ),
-              ),
-              PopupMenuButton<String>(
-                tooltip: 'workspace'.tr(),
-                padding: EdgeInsets.zero,
-                onSelected: (value) =>
-                    onWorkspaceChanged(value == '__personal__' ? null : value),
-                itemBuilder: (context) => [
-                  PopupMenuItem(
-                    value: '__personal__',
-                    child: ListTile(
-                      dense: true,
-                      contentPadding: EdgeInsets.zero,
-                      leading: const Icon(Symbols.person, size: 20),
-                      title: Text('personalFiles'.tr()),
-                    ),
-                  ),
-                  ...workspaces.map(
-                    (workspace) => PopupMenuItem(
-                      value: workspace.id,
-                      child: ListTile(
-                        dense: true,
-                        contentPadding: EdgeInsets.zero,
-                        leading: const Icon(Symbols.workspaces, size: 20),
-                        title: Text(workspace.name),
-                      ),
-                    ),
-                  ),
-                ],
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        selectedWorkspaceId == null
-                            ? Symbols.person
-                            : Symbols.workspaces,
-                        size: 18,
-                        color: scheme.onSurfaceVariant,
-                      ),
-                      if (!isCompact) ...[
-                        const Gap(4),
-                        ConstrainedBox(
-                          constraints: const BoxConstraints(maxWidth: 140),
-                          child: Text(
-                            selectedWorkspaceId == null
-                                ? 'personalFiles'.tr()
-                                : workspaces
-                                          .where(
-                                            (workspace) =>
-                                                workspace.id ==
-                                                selectedWorkspaceId,
-                                          )
-                                          .firstOrNull
-                                          ?.name ??
-                                      'workspace'.tr(),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: Theme.of(context).textTheme.labelMedium,
-                          ),
-                        ),
-                        const Icon(Symbols.arrow_drop_down, size: 18),
-                      ],
-                    ],
-                  ),
-                ),
               ),
               VerticalDivider(width: 1, thickness: 1, color: border),
               PopupMenuButton<String>(
