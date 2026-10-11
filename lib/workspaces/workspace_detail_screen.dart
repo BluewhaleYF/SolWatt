@@ -699,9 +699,13 @@ class _MailTabState extends ConsumerState<_MailTab> {
     );
     if (!confirmed || !mounted) return;
     try {
-      await ref
-          .read(wattEngineClientProvider)
-          .revokeMailCredential(credential.id);
+      await foundation.withSudoRetry(
+        context,
+        ref,
+        () => ref
+            .read(wattEngineClientProvider)
+            .revokeMailCredential(credential.id),
+      );
       _reload();
       showSnackBar('credentialRevoked'.tr());
     } catch (error) {
@@ -1753,13 +1757,17 @@ class _CreateCredentialSheetState
       return;
     }
     try {
-      final created = await ref
-          .read(wattEngineClientProvider)
-          .createMailCredential(
-            mailboxId: mailboxId,
-            label: label,
-            protocols: _protocols.toList(),
-          );
+      final created = await foundation.withSudoRetry(
+        context,
+        ref,
+        () => ref
+            .read(wattEngineClientProvider)
+            .createMailCredential(
+              mailboxId: mailboxId,
+              label: label,
+              protocols: _protocols.toList(),
+            ),
+      );
       if (!mounted) return;
       Navigator.pop(context, created);
     } catch (error) {

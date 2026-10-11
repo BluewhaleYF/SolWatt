@@ -14,6 +14,7 @@ import 'package:material_symbols_icons/symbols.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'package:solwatt/app_logging.dart';
+import 'package:solwatt/core/auth_wiring.dart';
 import 'package:solwatt/core/config.dart';
 import 'package:solwatt/core/drive_wiring.dart';
 import 'package:solwatt/firebase_options.dart';
@@ -89,6 +90,7 @@ Future<void> main() async {
       overrides: [
         sharedPreferencesProvider.overrideWithValue(preferences),
         ...driveHostOverrides(),
+        ...authHostOverrides(),
       ],
       child: EasyLocalization(
         supportedLocales: const [Locale('en', 'US'), Locale('zh', 'CN')],

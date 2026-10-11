@@ -173,11 +173,15 @@ class _CredentialsSectionState extends ConsumerState<_CredentialsSection> {
       isDanger: true,
       confirmLabel: 'revoke'.tr(),
     );
-    if (!confirmed) return;
+    if (!confirmed || !mounted) return;
     try {
-      await ref
-          .read(wattEngineClientProvider)
-          .revokeMailCredential(credential.id);
+      await withSudoRetry(
+        context,
+        ref,
+        () => ref
+            .read(wattEngineClientProvider)
+            .revokeMailCredential(credential.id),
+      );
       ref.invalidate(mailCredentialsProvider);
       if (mounted) showSnackBar('credentialRevoked'.tr());
     } catch (error) {
@@ -324,13 +328,17 @@ class _CreateCredentialSheetState
       return;
     }
     try {
-      final created = await ref
-          .read(wattEngineClientProvider)
-          .createMailCredential(
-            mailboxId: mailboxId,
-            label: label,
-            protocols: _protocols.toList(),
-          );
+      final created = await withSudoRetry(
+        context,
+        ref,
+        () => ref
+            .read(wattEngineClientProvider)
+            .createMailCredential(
+              mailboxId: mailboxId,
+              label: label,
+              protocols: _protocols.toList(),
+            ),
+      );
       if (mounted) Navigator.of(context).pop(created);
     } catch (error) {
       showSnackBar(error.toString());

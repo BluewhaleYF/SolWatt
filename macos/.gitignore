@@ -5,3 +5,7 @@
 # Xcode-related
 **/dgph
 **/xcuserdata/
+
+# Xcode Cloud regenerates this workspace; the project deliberately uses
+# Runner.xcworkspace.
+SolWatt.xcworkspace/
