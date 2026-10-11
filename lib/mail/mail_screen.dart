@@ -632,6 +632,8 @@ class _MailListWidgetState extends ConsumerState<_MailListWidget> {
                 onEmptyTrash: folder == 'trash'
                     ? () => _emptyTrash(context)
                     : null,
+                onMarkAllRead: (wholeMailbox) =>
+                    _markAllRead(context, wholeMailbox: wholeMailbox),
                 onSelectThreads: _selecting ? null : _enterSelectionMode,
               ),
             ),
@@ -768,6 +770,10 @@ class _MailListWidgetState extends ConsumerState<_MailListWidget> {
                 onPressed: () => _emptyTrash(context),
                 icon: const Icon(Symbols.delete_sweep, size: 20),
               ),
+            _MarkAllReadButton(
+              onSelected: (wholeMailbox) =>
+                  _markAllRead(context, wholeMailbox: wholeMailbox),
+            ),
             if (!_selecting)
               IconButton(
                 tooltip: 'enterSelectionMode'.tr(),
@@ -906,6 +912,46 @@ class _MailListWidgetState extends ConsumerState<_MailListWidget> {
     showSnackBar(
       permanent ? 'emailDeletedPermanently'.tr() : 'emailDeleted'.tr(),
     );
+  }
+
+  /// Marks every unread conversation read. [wholeMailbox] sweeps every folder
+  /// of the selected mailbox; otherwise only the open folder is swept.
+  Future<void> _markAllRead(
+    BuildContext context, {
+    required bool wholeMailbox,
+  }) async {
+    final mailboxId = _effectiveMailboxId(
+      ref.read(mailboxesProvider).value,
+      ref.read(selectedMailboxIdProvider),
+    );
+    if (mailboxId == null || mailboxId.isEmpty) return;
+    final folder = ref.read(selectedFolderProvider);
+    final confirmed = await showConfirmAlert(
+      wholeMailbox
+          ? 'markMailboxReadConfirm'.tr()
+          : 'markFolderReadConfirm'.tr(
+              namedArgs: {'folder': mailFolderLabel(folder)},
+            ),
+      wholeMailbox ? 'markMailboxRead'.tr() : 'markFolderRead'.tr(),
+      icon: Symbols.mark_email_read,
+      confirmLabel: 'markRead'.tr(),
+    );
+    if (!confirmed || !mounted) return;
+    try {
+      final updated = await ref
+          .read(wattEngineClientProvider)
+          .markAllRead(
+            mailboxId: mailboxId,
+            folder: wholeMailbox ? null : folder,
+          );
+      _resetList();
+      invalidateMailSurfaces(ref);
+      if (context.mounted) {
+        showSnackBar('markedAllRead'.tr(args: ['$updated']));
+      }
+    } catch (error) {
+      showSnackBar(error.toString());
+    }
   }
 
   /// Permanently removes every message the selected mailbox keeps in Trash.
@@ -1325,6 +1371,7 @@ class _MailListHeader extends StatelessWidget {
     required this.hasDiscoveryFilters,
     required this.onOpenSettings,
     required this.onShowFilters,
+    required this.onMarkAllRead,
     this.onEmptyTrash,
     this.onSelectThreads,
   });
@@ -1336,6 +1383,10 @@ class _MailListHeader extends StatelessWidget {
   final bool hasDiscoveryFilters;
   final VoidCallback onOpenSettings;
   final VoidCallback onShowFilters;
+
+  /// Sweeps unread mail: `false` for the open folder, `true` for every folder
+  /// of the selected mailbox.
+  final ValueChanged<bool> onMarkAllRead;
 
   /// Set while Trash is on screen: how many messages are in it is the server's
   /// answer, so the action is offered whenever the folder is open.
@@ -1361,6 +1412,7 @@ class _MailListHeader extends StatelessWidget {
                   onPressed: onEmptyTrash,
                   icon: const Icon(Symbols.delete_sweep, size: 20),
                 ),
+              _MarkAllReadButton(onSelected: onMarkAllRead),
               if (onSelectThreads != null)
                 IconButton(
                   tooltip: 'enterSelectionMode'.tr(),
@@ -1396,6 +1448,29 @@ class _MailListHeader extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
             child: searchField,
           ),
+      ],
+    );
+  }
+}
+
+/// Overflow action that sweeps unread mail: the open folder, or every folder
+/// of the selected mailbox. Both scopes live in one menu because the list
+/// chrome is a narrow pane that cannot afford two buttons.
+class _MarkAllReadButton extends StatelessWidget {
+  const _MarkAllReadButton({required this.onSelected});
+
+  /// `false` sweeps the open folder, `true` the whole mailbox.
+  final ValueChanged<bool> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return PopupMenuButton<bool>(
+      tooltip: 'markAllRead'.tr(),
+      icon: const Icon(Symbols.mark_email_read, size: 20),
+      onSelected: onSelected,
+      itemBuilder: (_) => [
+        PopupMenuItem(value: false, child: Text('markFolderRead'.tr())),
+        PopupMenuItem(value: true, child: Text('markMailboxRead'.tr())),
       ],
     );
   }

@@ -1523,6 +1523,27 @@ class WattEngineClient {
   Future<void> markEmailUnread(String emailId) =>
       _request<void>('POST', '$kElecPostalBase/emails/$emailId/unread');
 
+  /// Marks every unread message in scope read and reports how many changed.
+  /// [mailboxId] narrows the sweep to one hosted address, [folder] to a single
+  /// folder; with neither, the whole account is swept.
+  Future<int> markAllRead({String? mailboxId, String? folder}) async {
+    final scope = folder == null || folder.isEmpty
+        ? null
+        : <String, dynamic>{'folder': folder};
+    final response = mailboxId == null || mailboxId.isEmpty
+        ? await _request<Map<String, dynamic>>(
+            'POST',
+            '$kElecPostalBase/emails/read-all',
+            queryParameters: scope,
+          )
+        : await _request<Map<String, dynamic>>(
+            'POST',
+            '$kElecPostalBase/mailboxes/${Uri.encodeComponent(mailboxId)}/read-all',
+            queryParameters: scope,
+          );
+    return (response.data?['updated'] as num?)?.toInt() ?? 0;
+  }
+
   Future<List<MailCredential>> listMailCredentials() async {
     final response = await _get<List<dynamic>>('$kElecPostalBase/credentials');
     return (response.data ?? const [])
