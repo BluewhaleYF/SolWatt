@@ -3213,6 +3213,145 @@ class _PlainTextBodyScrollState extends State<_PlainTextBodyScroll> {
   }
 }
 
+/// Level the reader's sender-safety banner is shown at.
+enum MailSenderSafetyLevel {
+  /// No verdict, or a clean one: nothing is shown.
+  none,
+
+  /// Authentication warnings without the terminal forged-sender verdict.
+  suspicious,
+
+  /// The From domain's own policy rejects unauthenticated mail.
+  phishing,
+}
+
+/// Decides the banner level for a message. The terminal verdict outranks the
+/// individual warnings, and a message without a verdict shows nothing.
+MailSenderSafetyLevel mailSenderSafetyLevel(MailEmail email) {
+  final authentication = email.authentication;
+  if (authentication == null) {
+    return MailSenderSafetyLevel.none;
+  }
+  if (authentication.phishing) {
+    return MailSenderSafetyLevel.phishing;
+  }
+  return authentication.hasWarnings
+      ? MailSenderSafetyLevel.suspicious
+      : MailSenderSafetyLevel.none;
+}
+
+/// Catalog key for a server-emitted authentication warning, or null when the
+/// text is not one of the documented warnings. An unknown (newer) server string
+/// is then shown verbatim rather than as a missing-translation key.
+String? mailSenderWarningKey(String warning) => switch (warning.trim()) {
+  'Possible phishing: SPF verification failed' => 'senderWarningSpfFail',
+  'Possible forgery: DKIM signature is invalid' => 'senderWarningDkimInvalid',
+  'Domain policy rejects unauthenticated mail' => 'senderWarningDmarcReject',
+  'Domain policy quarantines unauthenticated mail' =>
+    'senderWarningDmarcQuarantine',
+  'Sender is blocked by a mailbox block rule' => 'senderWarningBlockedSender',
+  'Sender domain rejects unauthenticated mail (DMARC p=reject)' =>
+    'senderWarningSpoofedSender',
+  _ => null,
+};
+
+/// Renders the server's authentication verdict as reader-facing copy.
+String _senderWarningText(String warning) =>
+    mailSenderWarningKey(warning)?.tr() ?? warning;
+
+/// Persistent sender-safety banner for the message reader.
+///
+/// ElecPostal records the sender-authentication verdict on the message and keeps
+/// it after the message is moved out of Spam, so the warning stays visible while
+/// the message is open. A forged-sender verdict is called out as such; weaker
+/// authentication warnings get the same banner at a lower intensity.
+class MailSenderSafetyBanner extends StatelessWidget {
+  const MailSenderSafetyBanner({super.key, required this.email});
+
+  final MailEmail email;
+
+  @override
+  Widget build(BuildContext context) {
+    final level = mailSenderSafetyLevel(email);
+    final authentication = email.authentication;
+    if (level == MailSenderSafetyLevel.none || authentication == null) {
+      return const SizedBox(width: double.infinity);
+    }
+    final scheme = Theme.of(context).colorScheme;
+    final text = Theme.of(context).textTheme;
+    final phishing = level == MailSenderSafetyLevel.phishing;
+
+    // The reason and the warning carrying the same verdict share one line.
+    final messages = <String>{
+      if (phishing && authentication.phishingReason != null)
+        _senderWarningText(authentication.phishingReason!),
+      for (final warning in authentication.warnings)
+        _senderWarningText(warning),
+    }.toList();
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: scheme.errorContainer.withValues(alpha: phishing ? 0.55 : 0.3),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(
+              phishing ? Symbols.phishing : Symbols.warning,
+              color: scheme.error,
+              size: 20,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    (phishing
+                            ? 'senderSafetyPhishingTitle'
+                            : 'senderSafetySuspiciousTitle')
+                        .tr(),
+                    style: text.titleSmall?.copyWith(
+                      color: scheme.onErrorContainer,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  if (messages.isNotEmpty) const SizedBox(height: 4),
+                  for (final message in messages)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 2),
+                      child: Text(
+                        message,
+                        style: text.bodySmall?.copyWith(
+                          color: scheme.onErrorContainer,
+                        ),
+                      ),
+                    ),
+                  if (phishing) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      'senderSafetyPhishingHint'.tr(),
+                      style: text.bodySmall?.copyWith(
+                        color: scheme.onErrorContainer,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _EmailDetailContent extends StatelessWidget {
   const _EmailDetailContent({
     super.key,
@@ -3240,6 +3379,9 @@ class _EmailDetailContent extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        // Sits above the body and outside the scrolling body view, so the
+        // sender-safety warning stays on screen for the whole message.
+        MailSenderSafetyBanner(email: email),
         const Divider(height: 1),
         // The message body fills the remaining pane and scrolls itself: the
         // web view is a platform view that owns the mouse wheel over its whole

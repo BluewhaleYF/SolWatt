@@ -3200,6 +3200,55 @@ class MailRecipient {
   );
 }
 
+/// Sender-authentication verdict ElecPostal records for unauthenticated inbound
+/// mail, carried on the message payload as `authentication`.
+///
+/// [warnings] is the sender-safety badge the server documents: the strong
+/// symbols that fired for the message. [phishing] is the terminal verdict — the
+/// From domain publishes a DMARC reject policy while the message aligned with
+/// neither SPF nor DKIM, so the domain owner has declared that mail like this is
+/// forged. The server keeps both on the message after it is moved out of Spam,
+/// so the reader can keep warning about it.
+class MailSenderAuthentication {
+  const MailSenderAuthentication({
+    this.phishing = false,
+    this.phishingReason,
+    this.warnings = const [],
+  });
+
+  /// Whether the server treated the sender as forged.
+  final bool phishing;
+
+  /// Why the server treated it as forged; null unless [phishing].
+  final String? phishingReason;
+
+  /// Verifier and scorer warnings, deduplicated server-side.
+  final List<String> warnings;
+
+  bool get hasWarnings => warnings.isNotEmpty;
+
+  /// Parses the payload field, returning null when the server recorded no
+  /// verdict (send submissions, messages that predate the filter) or sent a
+  /// value that is not an object.
+  static MailSenderAuthentication? fromJson(Object? json) {
+    if (json is! Map) {
+      return null;
+    }
+    final warnings = json['warnings'];
+    return MailSenderAuthentication(
+      phishing: json['phishing'] == true,
+      phishingReason: nonEmptyString(json['phishing_reason']?.toString()),
+      warnings: warnings is List
+          ? [
+              for (final warning in warnings)
+                if (warning?.toString().trim().isNotEmpty ?? false)
+                  warning.toString().trim(),
+            ]
+          : const [],
+    );
+  }
+}
+
 class MailEmail {
   const MailEmail({
     required this.id,
@@ -3227,6 +3276,7 @@ class MailEmail {
     this.deliveryError,
     this.providerMessageId,
     this.summary,
+    this.authentication,
   });
 
   final String id;
@@ -3274,8 +3324,18 @@ class MailEmail {
   /// row already shows it while the detail pane has the full body to read.
   final String? summary;
 
+  /// Sender-authentication verdict for the message, null when the server
+  /// recorded none. Drives the reader's sender-safety banner.
+  final MailSenderAuthentication? authentication;
+
   bool get hasDeliveryStatus =>
       deliveryStatus != null && deliveryStatus!.isNotEmpty;
+
+  /// Whether the server filed the message as a forged sender.
+  bool get isPhishing => authentication?.phishing ?? false;
+
+  /// Sender-authentication warnings to surface as a safety badge.
+  List<String> get senderWarnings => authentication?.warnings ?? const [];
 
   bool get isHtml => contentType?.toLowerCase() == 'text/html';
 
@@ -3367,6 +3427,7 @@ class MailEmail {
         json['provider_message_id']?.toString(),
       ),
       summary: nonEmptyString(json['summary']?.toString()),
+      authentication: MailSenderAuthentication.fromJson(json['authentication']),
     );
   }
 }
