@@ -230,7 +230,6 @@ class _MailListWidgetState extends ConsumerState<_MailListWidget> {
   /// whole-conversation counts stay consistent and no page can go missing.
   int _take = kThreadPageSize;
   final _searchController = TextEditingController();
-  bool _searchOpen = false;
   Timer? _searchDebounce;
 
   /// Conversations ticked for a bulk action, held as whole threads so an
@@ -246,13 +245,15 @@ class _MailListWidgetState extends ConsumerState<_MailListWidget> {
   }
 
   /// Resets the list state when the mailbox, folder, or query changes.
-  void _resetList() {
-    setState(() {
-      _selectedThreadId = null;
-      _selection.clear();
-      _selectionMode = false;
-      _take = kThreadPageSize;
-    });
+  void _resetList() => setState(_forgetSelection);
+
+  /// The reset itself, so a caller that is already inside `setState` — applying
+  /// or dropping a filter — does not queue a second rebuild.
+  void _forgetSelection() {
+    _selectedThreadId = null;
+    _selection.clear();
+    _selectionMode = false;
+    _take = kThreadPageSize;
   }
 
   bool get _selecting => _selectionMode;
@@ -421,15 +422,6 @@ class _MailListWidgetState extends ConsumerState<_MailListWidget> {
     }
   }
 
-  void _toggleSearch() {
-    setState(() {
-      _searchOpen = !_searchOpen;
-      if (!_searchOpen) _searchController.clear();
-    });
-    if (!_searchOpen) _resetList();
-    ref.invalidate(threadsProvider);
-  }
-
   @override
   Widget build(BuildContext context) {
     ref.listen(selectedFolderProvider, (previous, next) {
@@ -542,21 +534,55 @@ class _MailListWidgetState extends ConsumerState<_MailListWidget> {
         .id;
   }
 
-  bool get _hasDiscoveryFilters =>
-      _deliveryStatus != null ||
-      _isFlagged != null ||
-      _from != null ||
-      _to != null ||
-      _hasAttachments != null;
+  /// The discovery filters in force, one chip each: the label the row under the
+  /// search field shows, and the way to drop just that condition.
+  List<_ActiveMailFilter> get _activeMailFilters => [
+    if (_deliveryStatus != null)
+      (
+        label: _filterChipLabel(
+          'deliveryStatus'.tr(),
+          switch (_deliveryStatus) {
+            'sent' => 'deliveryStatusSent'.tr(),
+            'pending' => 'deliveryStatusPending'.tr(),
+            'failed' => 'deliveryStatusFailed'.tr(),
+            _ => 'deliveryStatusNotConfigured'.tr(),
+          },
+        ),
+        onRemove: () => _clearFilter(_MailFilterField.status),
+      ),
+    if (_from != null)
+      (
+        label: _filterChipLabel('emailFromFilter'.tr(), _from!),
+        onRemove: () => _clearFilter(_MailFilterField.from),
+      ),
+    if (_to != null)
+      (
+        label: _filterChipLabel('emailToFilter'.tr(), _to!),
+        onRemove: () => _clearFilter(_MailFilterField.to),
+      ),
+    if (_isFlagged != null)
+      (
+        label: _filterChipLabel(
+          'flagged'.tr(),
+          (_isFlagged! ? 'yes' : 'no').tr(),
+        ),
+        onRemove: () => _clearFilter(_MailFilterField.flagged),
+      ),
+    if (_hasAttachments != null)
+      (
+        label: _filterChipLabel(
+          'hasAttachments'.tr(),
+          (_hasAttachments! ? 'yes' : 'no').tr(),
+        ),
+        onRemove: () => _clearFilter(_MailFilterField.attachments),
+      ),
+  ];
 
   /// A search runs across every mailbox and folder (see [threadsProvider]), so
   /// the list says so instead of implying it is scoped to the open folder.
   bool get _searching => _searchController.text.trim().isNotEmpty;
 
-  EmailListFilter _emailFilter({
-    String? mailboxId,
-    required String folder,
-  }) => (
+  EmailListFilter _emailFilter({String? mailboxId, required String folder}) => (
     mailboxId: mailboxId,
     folder: folder,
     q: _searchController.text.trim().isEmpty
@@ -583,17 +609,54 @@ class _MailListWidgetState extends ConsumerState<_MailListWidget> {
       ),
     );
     if (filter == null || !mounted) return;
+    _applyDiscoveryFilter(filter);
+  }
+
+  /// Applies a whole discovery-filter set: what the sheet returned, or an empty
+  /// one when the chips' "clear" is used.
+  void _applyDiscoveryFilter(_EmailDiscoveryFilter filter) {
     setState(() {
       _deliveryStatus = filter.status;
       _isFlagged = filter.isFlagged;
       _from = filter.from;
       _to = filter.to;
       _hasAttachments = filter.hasAttachments;
-      _selectedThreadId = null;
-      _take = kThreadPageSize;
+      _forgetSelection();
     });
     ref.invalidate(threadsProvider);
   }
+
+  /// Drops one discovery filter and reloads, so a chip's ✕ undoes exactly the
+  /// condition it names.
+  void _clearFilter(_MailFilterField field) {
+    setState(() {
+      switch (field) {
+        case _MailFilterField.status:
+          _deliveryStatus = null;
+        case _MailFilterField.from:
+          _from = null;
+        case _MailFilterField.to:
+          _to = null;
+        case _MailFilterField.flagged:
+          _isFlagged = null;
+        case _MailFilterField.attachments:
+          _hasAttachments = null;
+      }
+      _forgetSelection();
+    });
+    ref.invalidate(threadsProvider);
+  }
+
+  /// The list's one query control: search text and discovery filters in a
+  /// single bar, so the chrome carries no separate search and filter buttons.
+  Widget _buildSearchFilterBar({InputBorder? border}) => _MailSearchFilterBar(
+    controller: _searchController,
+    onChanged: _onSearchChanged,
+    activeFilters: _activeMailFilters,
+    onClearAll: () => _applyDiscoveryFilter(const _EmailDiscoveryFilter()),
+    onOpenFilters: () => _showEmailFilters(context),
+    border: border,
+  );
 
   Widget _buildEmailList(
     String? mailHost, {
@@ -617,24 +680,48 @@ class _MailListWidgetState extends ConsumerState<_MailListWidget> {
             color: Theme.of(context).colorScheme.surfaceContainerHigh,
             child: Padding(
               padding: const EdgeInsets.only(bottom: 4),
-              child: _MailListHeader(
-                mailboxSelector: mailboxSelector,
-                searchField: _buildSearchField(
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
+              child: Column(
+                children: [
+                  _MailListHeader(
+                    mailboxSelector: mailboxSelector,
+                    onOpenSettings: () => _openSettings(context),
+                    onEmptyTrash: folder == 'trash'
+                        ? () => _emptyTrash(context)
+                        : null,
+                    onMarkAllRead: (wholeMailbox) =>
+                        _markAllRead(context, wholeMailbox: wholeMailbox),
+                    onSelectThreads: _selecting ? null : _enterSelectionMode,
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                    child: _buildSearchFilterBar(
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ] else ...[
+          // A phone hangs the same bar off the app bar: search and filtering
+          // stay one control there too, instead of two app-bar buttons.
+          Material(
+            color: Theme.of(context).colorScheme.surface,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                border: Border(
+                  bottom: BorderSide(
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.outlineVariant.withValues(alpha: 0.55),
                   ),
                 ),
-                searchOpen: _searchOpen,
-                onToggleSearch: _toggleSearch,
-                hasDiscoveryFilters: _hasDiscoveryFilters,
-                onOpenSettings: () => _openSettings(context),
-                onShowFilters: () => _showEmailFilters(context),
-                onEmptyTrash: folder == 'trash'
-                    ? () => _emptyTrash(context)
-                    : null,
-                onMarkAllRead: (wholeMailbox) =>
-                    _markAllRead(context, wholeMailbox: wholeMailbox),
-                onSelectThreads: _selecting ? null : _enterSelectionMode,
+              ),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                child: _buildSearchFilterBar(),
               ),
             ),
           ),
@@ -731,74 +818,39 @@ class _MailListWidgetState extends ConsumerState<_MailListWidget> {
         items.every((thread) => _selection.containsKey(thread.id));
   }
 
-  /// Search input, decorated for the wide header box or bare for the app bar.
-  Widget _buildSearchField({InputBorder? border}) => TextField(
-    controller: _searchController,
-    onChanged: _onSearchChanged,
-    autofocus: true,
-    decoration: InputDecoration(
-      isDense: true,
-      hintText: 'searchEmailsHint'.tr(),
-      prefixIcon: const Icon(Symbols.search, size: 20),
-      border: border,
-    ),
-  );
-
   /// Phone chrome: the drawer, the active inbox and the header actions live in
-  /// an app bar instead of the wide header row.
+  /// an app bar instead of the wide header row. Search and filtering sit in the
+  /// bar below it, so the actions stay down to what a phone can carry.
   PreferredSizeWidget _buildMailAppBar(
     Widget mailboxSelector, {
     required String folder,
   }) => AppBar(
-    leading: _searchOpen
-        ? IconButton(
-            tooltip: 'clearSearch'.tr(),
-            onPressed: _toggleSearch,
-            icon: const Icon(Symbols.close),
-          )
-        : appBarDrawerButton(context),
+    leading: appBarDrawerButton(context),
     titleSpacing: 0,
-    title: _searchOpen
-        ? _buildSearchField(border: InputBorder.none)
-        : mailboxSelector,
-    actions: _searchOpen
-        ? const []
-        : [
-            if (folder == 'trash')
-              IconButton(
-                tooltip: 'emptyTrash'.tr(),
-                onPressed: () => _emptyTrash(context),
-                icon: const Icon(Symbols.delete_sweep, size: 20),
-              ),
-            _MarkAllReadButton(
-              onSelected: (wholeMailbox) =>
-                  _markAllRead(context, wholeMailbox: wholeMailbox),
-            ),
-            if (!_selecting)
-              IconButton(
-                tooltip: 'enterSelectionMode'.tr(),
-                onPressed: _enterSelectionMode,
-                icon: const Icon(Symbols.select_check_box, size: 20),
-              ),
-            IconButton(
-              tooltip: 'searchEmails'.tr(),
-              onPressed: _toggleSearch,
-              icon: const Icon(Symbols.search, size: 20),
-            ),
-            IconButton(
-              tooltip: 'mailSettings'.tr(),
-              onPressed: () => _openSettings(context),
-              icon: const Icon(Symbols.settings, size: 20),
-            ),
-            IconButton(
-              tooltip: 'emailFilters'.tr(),
-              onPressed: () => _showEmailFilters(context),
-              icon: Badge(
-                isLabelVisible: _hasDiscoveryFilters,
-                child: const Icon(Symbols.filter_alt, size: 20),
-              ),
-            ),
-          ],
+    title: mailboxSelector,
+    actions: [
+      if (folder == 'trash')
+        IconButton(
+          tooltip: 'emptyTrash'.tr(),
+          onPressed: () => _emptyTrash(context),
+          icon: const Icon(Symbols.delete_sweep, size: 20),
+        ),
+      _MarkAllReadButton(
+        onSelected: (wholeMailbox) =>
+            _markAllRead(context, wholeMailbox: wholeMailbox),
+      ),
+      if (!_selecting)
+        IconButton(
+          tooltip: 'enterSelectionMode'.tr(),
+          onPressed: _enterSelectionMode,
+          icon: const Icon(Symbols.select_check_box, size: 20),
+        ),
+      IconButton(
+        tooltip: 'mailSettings'.tr(),
+        onPressed: () => _openSettings(context),
+        icon: const Icon(Symbols.settings, size: 20),
+      ),
+    ],
   );
 
   Future<void> _refreshEmails(WidgetRef ref) async {
@@ -1365,24 +1417,14 @@ bool _messageLivesInTrash(WidgetRef ref, MailEmail email) {
 class _MailListHeader extends StatelessWidget {
   const _MailListHeader({
     required this.mailboxSelector,
-    required this.searchField,
-    required this.searchOpen,
-    required this.onToggleSearch,
-    required this.hasDiscoveryFilters,
     required this.onOpenSettings,
-    required this.onShowFilters,
     required this.onMarkAllRead,
     this.onEmptyTrash,
     this.onSelectThreads,
   });
 
   final Widget mailboxSelector;
-  final Widget searchField;
-  final bool searchOpen;
-  final VoidCallback onToggleSearch;
-  final bool hasDiscoveryFilters;
   final VoidCallback onOpenSettings;
-  final VoidCallback onShowFilters;
 
   /// Sweeps unread mail: `false` for the open folder, `true` for every folder
   /// of the selected mailbox.
@@ -1398,60 +1440,128 @@ class _MailListHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 8, 4),
+      child: Row(
+        children: [
+          Expanded(child: mailboxSelector),
+          const SizedBox(width: 4),
+          if (onEmptyTrash != null)
+            IconButton(
+              tooltip: 'emptyTrash'.tr(),
+              onPressed: onEmptyTrash,
+              icon: const Icon(Symbols.delete_sweep, size: 20),
+            ),
+          _MarkAllReadButton(onSelected: onMarkAllRead),
+          if (onSelectThreads != null)
+            IconButton(
+              tooltip: 'enterSelectionMode'.tr(),
+              onPressed: onSelectThreads,
+              icon: const Icon(Symbols.select_check_box, size: 20),
+            ),
+          IconButton(
+            tooltip: 'mailSettings'.tr(),
+            onPressed: onOpenSettings,
+            icon: const Icon(Symbols.settings, size: 20),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The list's single query surface: the search field with the discovery filters
+/// folded into it. The field's trailing action opens the filter dialog, and
+/// whatever that dialog returns is listed under the field as chips, so search
+/// and filtering read as one control instead of two buttons.
+class _MailSearchFilterBar extends StatelessWidget {
+  const _MailSearchFilterBar({
+    required this.controller,
+    required this.onChanged,
+    required this.activeFilters,
+    required this.onClearAll,
+    required this.onOpenFilters,
+    this.border,
+  });
+
+  /// Key the list's own tests reach the field by, whatever fills the chrome.
+  static const fieldKey = ValueKey('mail-search-field');
+
+  final TextEditingController controller;
+  final ValueChanged<String> onChanged;
+  final List<_ActiveMailFilter> activeFilters;
+
+  /// Drops every discovery filter at once, offered while more than one is set.
+  final VoidCallback onClearAll;
+
+  final VoidCallback onOpenFilters;
+
+  /// Wide headers box the field; a phone leaves it bare against the app bar.
+  final InputBorder? border;
+
+  @override
+  Widget build(BuildContext context) {
     return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 8, 4),
-          child: Row(
-            children: [
-              Expanded(child: mailboxSelector),
-              const SizedBox(width: 4),
-              if (onEmptyTrash != null)
-                IconButton(
-                  tooltip: 'emptyTrash'.tr(),
-                  onPressed: onEmptyTrash,
-                  icon: const Icon(Symbols.delete_sweep, size: 20),
-                ),
-              _MarkAllReadButton(onSelected: onMarkAllRead),
-              if (onSelectThreads != null)
-                IconButton(
-                  tooltip: 'enterSelectionMode'.tr(),
-                  onPressed: onSelectThreads,
-                  icon: const Icon(Symbols.select_check_box, size: 20),
-                ),
-              IconButton(
-                tooltip: 'searchEmails'.tr(),
-                onPressed: onToggleSearch,
-                icon: Icon(
-                  searchOpen ? Symbols.close : Symbols.search,
-                  size: 20,
-                ),
+        TextField(
+          key: fieldKey,
+          controller: controller,
+          onChanged: onChanged,
+          textInputAction: TextInputAction.search,
+          decoration: InputDecoration(
+            isDense: true,
+            hintText: 'searchEmailsHint'.tr(),
+            prefixIcon: const Icon(Symbols.search, size: 20),
+            suffixIcon: IconButton(
+              tooltip: 'emailFilters'.tr(),
+              onPressed: onOpenFilters,
+              icon: Badge(
+                isLabelVisible: activeFilters.isNotEmpty,
+                child: const Icon(Symbols.filter_alt, size: 20),
               ),
-              IconButton(
-                tooltip: 'mailSettings'.tr(),
-                onPressed: onOpenSettings,
-                icon: const Icon(Symbols.settings, size: 20),
-              ),
-              IconButton(
-                tooltip: 'emailFilters'.tr(),
-                onPressed: onShowFilters,
-                icon: Badge(
-                  isLabelVisible: hasDiscoveryFilters,
-                  child: const Icon(Symbols.filter_alt, size: 20),
-                ),
-              ),
-            ],
+            ),
+            border: border,
           ),
         ),
-        if (searchOpen)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-            child: searchField,
+        if (activeFilters.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 4,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              for (final filter in activeFilters)
+                InputChip(
+                  label: Text(filter.label),
+                  onDeleted: filter.onRemove,
+                  deleteButtonTooltipMessage: 'clear'.tr(),
+                  visualDensity: VisualDensity.compact,
+                ),
+              if (activeFilters.length > 1)
+                ActionChip(
+                  label: Text('clearFilters'.tr()),
+                  onPressed: onClearAll,
+                  visualDensity: VisualDensity.compact,
+                ),
+            ],
           ),
+        ],
       ],
     );
   }
 }
+
+/// A discovery filter the list is applying, as the row under the search field
+/// shows it: the chip's label, and the way to drop just that condition.
+typedef _ActiveMailFilter = ({String label, VoidCallback onRemove});
+
+/// The discovery filters a chip can drop one at a time.
+enum _MailFilterField { status, from, to, flagged, attachments }
+
+/// A chip's label: `"From: alice@example.com"` in the reader's locale.
+String _filterChipLabel(String label, String value) =>
+    'filterChip'.tr(namedArgs: {'label': label, 'value': value});
 
 /// Overflow action that sweeps unread mail: the open folder, or every folder
 /// of the selected mailbox. Both scopes live in one menu because the list

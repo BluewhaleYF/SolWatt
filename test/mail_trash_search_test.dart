@@ -65,7 +65,8 @@ class _FakeMailClient extends WattEngineClient {
   final permanentlyDeleted = <String>[];
   final moved = <(String, String)>[];
   final emptiedTrash = <String>[];
-  final threadQueries = <({String? mailboxId, String? folder, String? q})>[];
+  final threadQueries =
+      <({String? mailboxId, String? folder, String? q, bool? isFlagged})>[];
 
   @override
   Future<void> deleteEmail(String emailId) async {
@@ -101,7 +102,12 @@ class _FakeMailClient extends WattEngineClient {
     int offset = 0,
     int take = 20,
   }) async {
-    threadQueries.add((mailboxId: mailboxId, folder: folder, q: q));
+    threadQueries.add((
+      mailboxId: mailboxId,
+      folder: folder,
+      q: q,
+      isFlagged: isFlagged,
+    ));
     return const PaginatedResult<MailThread>(items: [], totalCount: 0);
   }
 }
@@ -116,7 +122,11 @@ class _FolderNotifier extends SelectedFolderNotifier {
   String build() => folder;
 }
 
-Future<MailThread> _pumpMailApp(WidgetTester tester, _FakeMailClient client) async {
+Future<MailThread> _pumpMailApp(
+  WidgetTester tester,
+  _FakeMailClient client, {
+  List<EmailListFilter>? queries,
+}) async {
   tester.binding.platformDispatcher.platformBrightnessTestValue =
       Brightness.dark;
   tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
@@ -157,6 +167,7 @@ Future<MailThread> _pumpMailApp(WidgetTester tester, _FakeMailClient client) asy
           (ref) async => const <String, MailAddressSuggestion>{},
         ),
         threadsProvider.overrideWith((ref, query) async {
+          queries?.add(query.filter);
           // The inbox holds two conversations, Trash holds one, and a search
           // spans both because it drops the folder scope.
           final threads = query.filter.q == null
@@ -277,13 +288,35 @@ void main() {
     );
     expect(client.threadQueries.last.mailboxId, 'mb-1');
     expect(client.threadQueries.last.folder, 'sent');
+
+    // A filter is a refinement, not a search: it keeps the mailbox and folder
+    // scope and rides the same request as the browse does.
+    await container.read(
+      threadsProvider((
+        filter: (
+          mailboxId: 'mb-1',
+          folder: 'inbox',
+          q: null,
+          status: null,
+          isFlagged: true,
+          from: null,
+          to: null,
+          hasAttachments: null,
+        ),
+        take: 20,
+      )).future,
+    );
+    expect(client.threadQueries.last.mailboxId, 'mb-1');
+    expect(client.threadQueries.last.folder, 'inbox');
+    expect(client.threadQueries.last.isFlagged, isTrue);
   });
 
   testWidgets('mail list multi-selects, trashes, purges and searches wide', (
     tester,
   ) async {
     final client = _FakeMailClient();
-    await _pumpMailApp(tester, client);
+    final queries = <EmailListFilter>[];
+    await _pumpMailApp(tester, client, queries: queries);
     expect(find.text('Subject e-1'), findsWidgets);
     expect(find.text('Subject e-2'), findsWidgets);
 
@@ -317,7 +350,7 @@ void main() {
     expect(find.text('Permanently deleted 1 conversations.'), findsOneWidget);
     await _settleMail(tester);
 
-    // Emptying Trash is its own action, next to the search button.
+    // Emptying Trash is its own action in the list header.
     await tester.tap(find.byIcon(Symbols.delete_sweep));
     await tester.pumpAndSettle();
     await tester.tap(find.widgetWithText(TextButton, 'Empty trash'));
@@ -327,16 +360,48 @@ void main() {
     expect(find.text('Deleted 3 messages from Trash.'), findsOneWidget);
     await _settleMail(tester);
 
+    // Search and filtering are one control: a single field carries the query,
+    // and the filters hang off that same field instead of a second button.
+    final searchField = find.byKey(const ValueKey('mail-search-field'));
+    expect(searchField, findsOneWidget);
+    expect(find.byIcon(Symbols.search), findsOneWidget); // the field's own icon
+    expect(
+      find.descendant(of: searchField, matching: find.byIcon(Symbols.filter_alt)),
+      findsOneWidget,
+    );
+
     // A search drops the folder scope: the list says so, and each hit names
     // the mailbox and shows the row's own checkbox affordance.
-    await tester.tap(find.byIcon(Symbols.search));
-    await tester.pumpAndSettle();
-    await tester.enterText(find.byType(TextField).first, 'invoice');
+    await tester.enterText(searchField, 'invoice');
     await tester.pump(const Duration(milliseconds: 600));
     await tester.pumpAndSettle();
     expect(find.text('Searching every mailbox and folder'), findsOneWidget);
     expect(find.text('Work'), findsWidgets);
     // Trash mail is part of the result: the search dropped the folder scope.
     expect(find.text('Subject e-3'), findsWidgets);
+    await _settleMail(tester);
+
+    // A filter applies through the same field and reports itself as a chip
+    // under it, so the query and the filters are readable at a glance.
+    await tester.tap(find.byIcon(Symbols.filter_alt));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(DropdownButtonFormField<bool?>).first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Yes').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Apply'));
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pumpAndSettle();
+    expect(find.widgetWithText(InputChip, 'Flagged: Yes'), findsOneWidget);
+    expect(queries.last.isFlagged, isTrue);
+    expect(queries.last.q, 'invoice');
+
+    // The chip's own ✕ drops just that condition.
+    await tester.tap(find.byTooltip('Clear'));
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pumpAndSettle();
+    expect(find.widgetWithText(InputChip, 'Flagged: Yes'), findsNothing);
+    expect(queries.last.isFlagged, isNull);
+    expect(queries.last.q, 'invoice');
   });
 }

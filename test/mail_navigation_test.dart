@@ -209,10 +209,14 @@ void main() {
       findsNothing,
     );
 
-    // No card pane on a phone: the list runs edge to edge, straight under the
-    // app bar, and the compose FAB clears the bottom bar.
+    // No card pane on a phone: the search-and-filter bar hangs straight off
+    // the app bar and the list runs edge to edge under it, floor to the bottom
+    // bar, with the compose FAB clearing that bar.
+    final searchField = find.byKey(const ValueKey('mail-search-field'));
+    final searchRect = tester.getRect(searchField);
     final listRect = tester.getRect(find.byType(RefreshIndicator));
-    expect(listRect.top, tester.getRect(appBar).bottom);
+    expect(tester.getRect(appBar).bottom, lessThanOrEqualTo(searchRect.top));
+    expect(searchRect.bottom, lessThan(listRect.top));
     expect(listRect.left, 0);
     expect(listRect.width, 400);
     expect(
@@ -257,21 +261,33 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Alice'), findsOneWidget);
 
-    // Search moves into the app bar and resets back to the inbox title.
-    await tester.tap(find.byIcon(Symbols.search));
-    await tester.pumpAndSettle();
-    final searchField = find.descendant(
-      of: appBar,
-      matching: find.byType(TextField),
+    // Search and filtering are one field under the app bar: typing goes
+    // straight in and neither the title nor the leading button moves out of
+    // the way, which is the point of merging the two controls.
+    expect(
+      find.descendant(of: appBar, matching: find.byType(TextField)),
+      findsNothing,
     );
-    expect(searchField, findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey('mail-search-field')),
+        matching: find.byIcon(Symbols.filter_alt),
+      ),
+      findsOneWidget,
+    );
     await tester.enterText(searchField, 'hello');
     await tester.pump(const Duration(milliseconds: 600));
     await tester.pumpAndSettle();
     expect(find.text('Alice'), findsOneWidget);
-    await tester.tap(find.byIcon(Symbols.close));
+    expect(find.text('Searching every mailbox and folder'), findsOneWidget);
+    expect(
+      find.descendant(of: appBar, matching: find.text('Work')),
+      findsOneWidget,
+    );
+    await tester.enterText(searchField, '');
+    await tester.pump(const Duration(milliseconds: 600));
     await tester.pumpAndSettle();
-    expect(searchField, findsNothing);
+    expect(find.text('Searching every mailbox and folder'), findsNothing);
 
     // ---- A conversation on a phone ----
     // Opening a message animates the row into the conversation (the same
