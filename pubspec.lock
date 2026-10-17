@@ -314,13 +314,13 @@ packages:
     source: hosted
     version: "0.8.4"
   desktop_webview_window:
-    dependency: transitive
+    dependency: "direct overridden"
     description:
       name: desktop_webview_window
-      sha256: b6fdae2cbf9571879b1761c12f27facaf82e22d0bdc74d049907c2a09a432957
+      sha256: "20c3ac0f0404f72a0ce76f6f729f4dc656c04747f42e0a38d9553855b1d6012e"
       url: "https://pub.dev"
     source: hosted
-    version: "0.3.0"
+    version: "0.3.2"
   device_info_plus:
     dependency: "direct main"
     description:
@@ -553,9 +553,11 @@ packages:
   flutter_app_update:
     dependency: transitive
     description:
-      path: "../Solian/socommon/packages/flutter_app_update"
-      relative: true
-    source: path
+      path: "packages/flutter_app_update"
+      ref: da43e0a014a337cebde41a5528f7e1596ea9bd89
+      resolved-ref: da43e0a014a337cebde41a5528f7e1596ea9bd89
+      url: "https://src.solsynth.dev/SoSYS/Socommon.git"
+    source: git
     version: "3.2.4"
   flutter_blurhash:
     dependency: "direct main"
@@ -1103,9 +1105,11 @@ packages:
   island_ui_foundation:
     dependency: "direct main"
     description:
-      path: "../Solian/socommon/packages/island_ui_foundation"
-      relative: true
-    source: path
+      path: "packages/island_ui_foundation"
+      ref: da43e0a014a337cebde41a5528f7e1596ea9bd89
+      resolved-ref: da43e0a014a337cebde41a5528f7e1596ea9bd89
+      url: "https://src.solsynth.dev/SoSYS/Socommon.git"
+    source: git
     version: "1.0.0"
   jni:
     dependency: transitive
@@ -1340,13 +1344,13 @@ packages:
     source: hosted
     version: "0.8.0"
   native_toolchain_rust:
-    dependency: transitive
+    dependency: "direct overridden"
     description:
       name: native_toolchain_rust
-      sha256: "8469a0e32a47a5c84b7fd300de9fd0e8082aac76c37922986324f5082a58350d"
+      sha256: faa57d2258a3b0fd2a634054f54e4496c9fcbd971977e7d2b7e6916d56892857
       url: "https://pub.dev"
     source: hosted
-    version: "1.0.6"
+    version: "1.0.4+0"
   objective_c:
     dependency: transitive
     description:
@@ -1843,23 +1847,29 @@ packages:
   solar_network_foundation:
     dependency: "direct main"
     description:
-      path: "../Solian/socommon/packages/solar_network_foundation"
-      relative: true
-    source: path
+      path: "packages/solar_network_foundation"
+      ref: da43e0a014a337cebde41a5528f7e1596ea9bd89
+      resolved-ref: da43e0a014a337cebde41a5528f7e1596ea9bd89
+      url: "https://src.solsynth.dev/SoSYS/Socommon.git"
+    source: git
     version: "0.1.0"
   solar_network_sdk:
     dependency: "direct main"
     description:
-      path: "../Solian/socommon/packages/solar_network_sdk"
-      relative: true
-    source: path
+      path: "packages/solar_network_sdk"
+      ref: da43e0a014a337cebde41a5528f7e1596ea9bd89
+      resolved-ref: da43e0a014a337cebde41a5528f7e1596ea9bd89
+      url: "https://src.solsynth.dev/SoSYS/Socommon.git"
+    source: git
     version: "1.0.0"
   solsynth_express:
     dependency: "direct main"
     description:
-      path: "../Solian/socommon/packages/solsynth_express"
-      relative: true
-    source: path
+      path: "packages/solsynth_express"
+      ref: da43e0a014a337cebde41a5528f7e1596ea9bd89
+      resolved-ref: da43e0a014a337cebde41a5528f7e1596ea9bd89
+      url: "https://src.solsynth.dev/SoSYS/Socommon.git"
+    source: git
     version: "0.1.0"
   source_gen:
     dependency: transitive

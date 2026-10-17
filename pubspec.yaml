@@ -163,6 +163,19 @@ dev_dependencies:
   freezed: ^4.0.1
   flutter_launcher_icons: ^0.14.4
 
+dependency_overrides:
+  # super_native_extensions ships a Cargo.toml without an explicit [lib] name.
+  # native_toolchain_rust 1.0.6 reads `lib.name` with a non-nullable cast and
+  # aborts the native-assets hook, so the Rust part of super_context_menu never
+  # builds. 1.0.4+0 treats the field as optional; 1.0.7 (the actual fix) needs
+  # code_assets 2.x, which irondash_engine_context 0.6.0-dev.0 pins to 1.x.
+  native_toolchain_rust: 1.0.4+0
+  # flutter_web_auth_2 allows ^0.3.0, whose Linux webview frees its window while
+  # the GTK "destroy" handler is still using it. Closing the OAuth window then
+  # segfaults the whole app before the token is exchanged. 0.3.1 fixed the
+  # use-after-free (#513); keep the resolver off the broken patch.
+  desktop_webview_window: ^0.3.2
+
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
 
